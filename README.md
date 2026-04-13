@@ -1,6 +1,6 @@
-# netmiko-mcp-server (lab)
+# netmiko-mcp-server
 
-研究室内のNW機器をチャット形式で操作するためのMCPサーバーです。`netmiko` を使って SSH / Telnet に対応し、`enable` パスワードにも対応します。
+NW機器をチャット形式で操作するためのMCPサーバーです。`netmiko` を使って SSH / Telnet に対応し、`enable` パスワードにも対応します。
 
 ## 特徴
 - SSH / Telnet 両対応
