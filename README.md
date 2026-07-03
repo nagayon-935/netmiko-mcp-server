@@ -142,13 +142,33 @@ uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.
 `send_command_to_group` の同時接続数はデフォルト10です。`--max-workers` で変更できます。
 
 #### Docker での起動
-まず、イメージをビルドします。
+
+**公開イメージを使う（推奨）**
+
+`main` ブランチへのpush、または `v*.*.*` タグのpushをトリガーに、GitHub Actions が GitHub Container Registry (GHCR) にイメージを自動ビルド・公開します（`.github/workflows/ci.yaml` の `publish` ジョブ）。lint・型チェック・テストが全て通った場合のみ公開されます。
+
+```bash
+docker pull ghcr.io/nagayon-935/netmiko_mcp_server:latest
+```
+
+利用可能なタグ:
+| タグ | 内容 |
+|---|---|
+| `latest` | `main` ブランチの最新コミット |
+| `sha-<short-sha>` | 特定コミット時点のビルド（トレーサビリティ用） |
+| `v1.2.3` / `1.2` | `v*.*.*` 形式のgitタグをpushした場合のみ生成されるsemverタグ |
+
+対応アーキテクチャ: `linux/amd64`, `linux/arm64`（Raspberry Piやapple silicon上のDocker/Podmanでも動作します）。
+
+> **初回公開時の注意:** GHCRのパッケージはリポジトリが公開でも既定で非公開（Private）になることがあります。`docker pull` が403で失敗する場合は、GitHubの当該リポジトリ → Packages → 対象パッケージの Package settings から Visibility を Public に変更してください。また、Actions が `packages: write` できない場合は Settings → Actions → General → Workflow permissions で "Read and write permissions" が有効か確認してください。
+
+**自分でビルドする場合**
 
 ```bash
 docker build -t netmiko-mcp-server .
 ```
 
-次に、デバイス設定ファイルとコマンド許可リストをマウントしてコンテナを起動します。
+次に、デバイス設定ファイルとコマンド許可リストをマウントしてコンテナを起動します（公開イメージを使う場合は `netmiko-mcp-server` を `ghcr.io/nagayon-935/netmiko_mcp_server:latest` に読み替えてください）。
 
 ```bash
 docker run -d -p 10000:10000 \
