@@ -26,10 +26,29 @@ _audit_logger.addHandler(logging.NullHandler())
 
 _LOGRECORD_BUILTIN_ATTRS = frozenset(
     {
-        "args", "asctime", "created", "exc_info", "exc_text", "filename",
-        "funcName", "levelname", "levelno", "lineno", "message", "module",
-        "msecs", "msg", "name", "pathname", "process", "processName",
-        "relativeCreated", "stack_info", "taskName", "thread", "threadName",
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
     }
 )
 
@@ -37,7 +56,9 @@ _LOGRECORD_BUILTIN_ATTRS = frozenset(
 class _AuditJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         data: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(),
         }
         for key, value in record.__dict__.items():
             if key not in _LOGRECORD_BUILTIN_ATTRS:
@@ -76,7 +97,9 @@ def configure_audit_logger(log_file: str) -> None:
     log_path.chmod(0o600)
 
 
-def log_command_attempt(*, tool: str, device: str, command: str, verdict: str, reason: str) -> None:
+def log_command_attempt(
+    *, tool: str, device: str, command: str, verdict: str, reason: str
+) -> None:
     """Record a command validation decision (allowed or denied + reason)."""
     _audit_logger.info(
         "audit",

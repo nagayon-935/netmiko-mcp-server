@@ -17,7 +17,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 
 # ソースコードをコピー
-COPY main.py security.py audit.py http_auth.py .
+COPY main.py inventory.py server.py security.py audit.py http_auth.py .
 
 # パスと環境変数の設定
 ENV PATH="/app/.venv/bin:$PATH"
