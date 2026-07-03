@@ -7,6 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from netmiko import exceptions
+from paramiko.ssh_exception import SSHException
 
 import output_store
 from audit import (
@@ -16,13 +17,23 @@ from audit import (
     log_connection_outcome,
 )
 from inventory import Device, get_device_names, load_config_toml
-from security import CommandPolicy, validate_command
+from security import CommandPolicy, validate_command, validate_config_command
 
 logger = logging.getLogger("netmiko-mcp-server")
+
+# netmiko's exception hierarchy is inconsistent: most of its exceptions derive
+# from NetmikoBaseException, but NetmikoTimeoutException and
+# NetmikoAuthenticationException derive from paramiko's SSHException instead
+# (kept that way for backwards compatibility with paramiko-based code). Catch
+# both hierarchies together so device-unreachable and bad-credential errors
+# surface as a clean "Connection Error" response instead of an unhandled
+# exception.
+CONNECTION_ERRORS = (exceptions.NetmikoBaseException, SSHException)
 
 # Set by main() at startup from CLI arguments.
 enable_config: bool = False
 command_policy: CommandPolicy = CommandPolicy()
+config_command_policy: CommandPolicy = CommandPolicy()
 output_save_threshold: int = 1000
 max_workers: int = 10
 
@@ -89,7 +100,7 @@ def _execute_show_command(
             command=original_command,
             outcome=OUTCOME_SUCCESS,
         )
-    except exceptions.ConnectionException as exc:
+    except CONNECTION_ERRORS as exc:
         log_connection_outcome(
             tool=tool,
             device=device_name,
@@ -250,21 +261,45 @@ def read_device_output(
 def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> str:
     """
     Send configuration commands to a network device specified by the name.
-    Disabled by default; start the server with --enable-config to allow this tool.
+
+    Disabled by default; start the server with --enable-config to allow this
+    tool. Each command is validated against config_allowed_commands /
+    config_denied_commands (from --commands-file) before anything is sent to
+    the device; if any single command is denied, none of them are sent.
+    Certain state-changing commands (interface shutdown/no shutdown, clear)
+    are always denied regardless of configuration.
     """
     joined_commands = "; ".join(commands)
-    log_command_attempt(
-        tool="set_config_commands_and_commit_or_save",
-        device=name,
-        command=joined_commands,
-        verdict="ALLOWED" if enable_config else "DENIED",
-        reason="ALLOWED" if enable_config else "CONFIG_MODE_DISABLED",
-    )
+
     if not enable_config:
+        log_command_attempt(
+            tool="set_config_commands_and_commit_or_save",
+            device=name,
+            command=joined_commands,
+            verdict="DENIED",
+            reason="CONFIG_MODE_DISABLED",
+        )
         return (
             "Error: configuration changes are disabled by default. "
             "Start the server with --enable-config to allow this tool."
         )
+
+    normalized_commands: list[str] = []
+    for cmd in commands:
+        result = validate_config_command(cmd, config_command_policy)
+        log_command_attempt(
+            tool="set_config_commands_and_commit_or_save",
+            device=name,
+            command=cmd,
+            verdict="ALLOWED" if result.allowed else "DENIED",
+            reason=result.reason,
+        )
+        if not result.allowed:
+            logger.warning(
+                "blocked config command for %s: %s (%s)", name, cmd, result.reason
+            )
+            return f"Security Error: config command '{cmd}' is not permitted ({result.reason})."
+        normalized_commands.append(result.normalized_command)
 
     devs = load_config_toml()
     if name not in devs:
@@ -273,14 +308,14 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
         return ret
 
     try:
-        ret = devs[name].send_config_set_and_commit_and_save(commands)
+        ret = devs[name].send_config_set_and_commit_and_save(normalized_commands)
         log_connection_outcome(
             tool="set_config_commands_and_commit_or_save",
             device=name,
             command=joined_commands,
             outcome=OUTCOME_SUCCESS,
         )
-    except exceptions.ConnectionException as exc:
+    except CONNECTION_ERRORS as exc:
         ret = f"Connection Error: {exc}"
         log_connection_outcome(
             tool="set_config_commands_and_commit_or_save",

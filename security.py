@@ -29,6 +29,20 @@ REASON_UNSAFE_CHAR = "UNSAFE_CHAR"
 REASON_DENY_MATCH = "DENY_MATCH"
 REASON_NO_ALLOW_MATCH = "NO_ALLOW_MATCH"
 
+# State-changing configuration commands that are always denied for
+# set_config_commands_and_commit_or_save, regardless of config_allowed_commands
+# / config_denied_commands. Merged into every config policy's denied_commands
+# so these stay blocked even if the operator's TOML doesn't list them, or a
+# broad config_allowed_commands glob would otherwise match them.
+#
+# "no shutdown" (re-enabling an interface) is intentionally NOT included here:
+# unlike "shutdown", it is not the risky direction of the toggle.
+BASELINE_CONFIG_DENIED_COMMANDS: tuple[str, ...] = (
+    "shutdown",
+    "shutdown*",
+    "clear*",
+)
+
 
 @dataclass(frozen=True)
 class ValidationResult:
@@ -58,6 +72,28 @@ def load_command_policy(path: str | None) -> CommandPolicy:
     return CommandPolicy(
         allowed_commands=tuple(data.get("allowed_commands", [])),
         denied_commands=tuple(data.get("denied_commands", [])),
+    )
+
+
+def load_config_command_policy(path: str | None) -> CommandPolicy:
+    """Load the allow/deny policy for configuration commands.
+
+    Reads config_allowed_commands / config_denied_commands from the same TOML
+    file as load_command_policy (a separate --commands-file is not needed).
+    BASELINE_CONFIG_DENIED_COMMANDS is always appended to denied_commands.
+
+    Returns a policy with only the baseline denies (deny-all, since
+    allowed_commands is empty) when path is None.
+    """
+    if path is None:
+        return CommandPolicy()
+
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+
+    return CommandPolicy(
+        allowed_commands=tuple(data.get("config_allowed_commands", [])),
+        denied_commands=tuple(data.get("config_denied_commands", [])),
     )
 
 
@@ -157,3 +193,19 @@ def validate_command(command: str, policy: CommandPolicy) -> ValidationResult:
     return ValidationResult(
         allowed=False, reason=REASON_NO_ALLOW_MATCH, normalized_command=normalized
     )
+
+
+def validate_config_command(command: str, policy: CommandPolicy) -> ValidationResult:
+    """Validate a single configuration-mode command line.
+
+    Identical to validate_command, except BASELINE_CONFIG_DENIED_COMMANDS is
+    always enforced in addition to policy.denied_commands — regardless of how
+    policy was constructed — so state-changing commands like interface
+    shutdown or clear stay blocked even if a caller builds a CommandPolicy
+    directly instead of going through load_config_command_policy().
+    """
+    effective_policy = CommandPolicy(
+        allowed_commands=policy.allowed_commands,
+        denied_commands=policy.denied_commands + BASELINE_CONFIG_DENIED_COMMANDS,
+    )
+    return validate_command(command, effective_policy)

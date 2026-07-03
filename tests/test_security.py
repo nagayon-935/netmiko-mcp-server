@@ -5,8 +5,10 @@ from security import (
     REASON_UNSAFE_CHAR,
     CommandPolicy,
     load_command_policy,
+    load_config_command_policy,
     validate_command,
     validate_command_lists,
+    validate_config_command,
 )
 
 
@@ -108,3 +110,59 @@ def test_load_command_policy_reads_toml(tmp_path):
     policy = load_command_policy(str(commands_file))
     assert policy.allowed_commands == ("show version",)
     assert policy.denied_commands == ("show running-config",)
+
+
+def test_load_config_command_policy_returns_empty_when_path_is_none():
+    assert load_config_command_policy(None) == CommandPolicy()
+
+
+def test_load_config_command_policy_reads_toml(tmp_path):
+    commands_file = tmp_path / "commands.toml"
+    commands_file.write_text(
+        'config_allowed_commands = ["description *"]\n'
+        'config_denied_commands = ["no ip address*"]\n'
+    )
+    policy = load_config_command_policy(str(commands_file))
+    assert policy.allowed_commands == ("description *",)
+    assert policy.denied_commands == ("no ip address*",)
+
+
+def test_validate_config_command_allows_listed_command():
+    policy = CommandPolicy(allowed_commands=("description *",))
+    result = validate_config_command("description uplink", policy)
+    assert result.allowed is True
+
+
+def test_validate_config_command_denies_unlisted_command():
+    policy = CommandPolicy(allowed_commands=("description *",))
+    result = validate_config_command("ip route 0.0.0.0 0.0.0.0 1.1.1.1", policy)
+    assert result.allowed is False
+    assert result.reason == REASON_NO_ALLOW_MATCH
+
+
+def test_validate_config_command_denies_shutdown_even_when_explicitly_allowed():
+    policy = CommandPolicy(allowed_commands=("shutdown",))
+    result = validate_config_command("shutdown", policy)
+    assert result.allowed is False
+    assert result.reason == REASON_DENY_MATCH
+
+
+def test_validate_config_command_denies_clear_glob():
+    policy = CommandPolicy(allowed_commands=("clear counters",))
+    result = validate_config_command("clear counters", policy)
+    assert result.allowed is False
+    assert result.reason == REASON_DENY_MATCH
+
+
+def test_validate_config_command_allows_no_shutdown():
+    policy = CommandPolicy(allowed_commands=("no shutdown",))
+    result = validate_config_command("no shutdown", policy)
+    assert result.allowed is True
+
+
+def test_validate_config_command_baseline_deny_applies_without_toml_loader():
+    # Baseline denies must hold even when the policy is constructed directly,
+    # not just when loaded via load_config_command_policy().
+    policy = CommandPolicy(allowed_commands=("shutdown", "clear*"))
+    assert validate_config_command("shutdown", policy).allowed is False
+    assert validate_config_command("clear counters", policy).allowed is False

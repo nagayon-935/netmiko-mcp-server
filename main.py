@@ -14,7 +14,11 @@ import server
 from audit import configure_audit_logger
 from credential_crypto import KEY_ENV_VAR, encrypt_value, generate_key
 from http_auth import BearerTokenMiddleware
-from security import load_command_policy, validate_command_lists
+from security import (
+    load_command_policy,
+    load_config_command_policy,
+    validate_command_lists,
+)
 
 logger = logging.getLogger("netmiko-mcp-server")
 logging.basicConfig(level=logging.INFO)
@@ -146,7 +150,10 @@ def main() -> None:
     output_store.output_dir = args.output_dir
 
     server.command_policy = load_command_policy(args.commands_file)
-    policy_errors = validate_command_lists(server.command_policy)
+    server.config_command_policy = load_config_command_policy(args.commands_file)
+    policy_errors = validate_command_lists(
+        server.command_policy
+    ) + validate_command_lists(server.config_command_policy)
     if policy_errors:
         raise SystemExit("Startup Error: " + " ".join(policy_errors))
     if args.commands_file is None:

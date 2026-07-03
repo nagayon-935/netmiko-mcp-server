@@ -43,11 +43,13 @@ class _StubDevice:
 def _reset_server_globals():
     original_enable_config = server.enable_config
     original_policy = server.command_policy
+    original_config_policy = server.config_command_policy
     original_threshold = server.output_save_threshold
     original_max_workers = server.max_workers
     yield
     server.enable_config = original_enable_config
     server.command_policy = original_policy
+    server.config_command_policy = original_config_policy
     server.output_save_threshold = original_threshold
     server.max_workers = original_max_workers
 
@@ -214,10 +216,78 @@ def test_set_config_denied_by_default(monkeypatch):
 
 def test_set_config_allowed_when_enabled(monkeypatch):
     server.enable_config = True
+    server.config_command_policy = CommandPolicy(allowed_commands=("description *",))
+    stub = _StubDevice("r1", output="applied")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save("r1", ["description uplink"])
+
+    assert result == "applied"
+    assert stub.last_config_commands == ["description uplink"]
+
+
+def test_set_config_denied_when_not_in_allow_list(monkeypatch):
+    server.enable_config = True
+    server.config_command_policy = CommandPolicy(allowed_commands=("description *",))
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save(
+        "r1", ["ip route 0.0.0.0 0.0.0.0 1.1.1.1"]
+    )
+
+    assert "Security Error" in result
+    assert stub.last_config_commands is None
+
+
+def test_set_config_denies_shutdown_even_if_explicitly_allowed(monkeypatch):
+    server.enable_config = True
+    # Even an explicit allow entry for "shutdown" must not override the
+    # baseline deny — deny always wins.
+    server.config_command_policy = CommandPolicy(allowed_commands=("shutdown",))
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save("r1", ["shutdown"])
+
+    assert "Security Error" in result
+    assert "shutdown" in result
+    assert stub.last_config_commands is None
+
+
+def test_set_config_allows_no_shutdown(monkeypatch):
+    server.enable_config = True
+    server.config_command_policy = CommandPolicy(allowed_commands=("no shutdown",))
     stub = _StubDevice("r1", output="applied")
     monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
 
     result = server.set_config_commands_and_commit_or_save("r1", ["no shutdown"])
 
     assert result == "applied"
-    assert stub.last_config_commands == ["no shutdown"]
+
+
+def test_set_config_denies_clear_even_if_explicitly_allowed(monkeypatch):
+    server.enable_config = True
+    server.config_command_policy = CommandPolicy(allowed_commands=("clear counters",))
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save("r1", ["clear counters"])
+
+    assert "Security Error" in result
+    assert stub.last_config_commands is None
+
+
+def test_set_config_stops_before_connecting_on_first_denied_command(monkeypatch):
+    server.enable_config = True
+    server.config_command_policy = CommandPolicy(allowed_commands=("description *",))
+    stub = _StubDevice("r1", output="applied")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save(
+        "r1", ["description uplink", "shutdown"]
+    )
+
+    assert "Security Error" in result
+    # Nothing should have been sent to the device since the batch failed validation.
+    assert stub.last_config_commands is None
