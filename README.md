@@ -13,6 +13,10 @@ NW機器をチャット形式で操作するためのMCPサーバーです。`ne
 - 設定変更ツール (`set_config_commands_and_commit_or_save`) はデフォルト無効。`--enable-config` で明示的に有効化
 - SSEモードは Bearer トークン認証が必須（`--no-http-auth` で明示的に無効化可能。非推奨）
 - 全てのコマンド試行・接続結果をJSON形式で監査ログに記録（fail-closed: ログ書き込みに失敗した場合は操作自体が失敗する）
+- 巨大な出力は自動的にファイル保存し、ページング付きで読み出し可能（LLMのコンテキストを圧迫しない）
+- `[groups]` でグループ化した複数デバイスへの並列コマンド実行に対応
+- `use_textfsm=True` でntc-templatesによる構造化(JSON)出力に対応
+- インベントリの `password`/`secret` を暗号化して保存可能（Fernet対称鍵暗号）
 
 ## 使い方
 
@@ -59,7 +63,40 @@ denied_commands = [
 ]
 ```
 
-### 3. サーバー起動
+### 3. デバイスグループ (任意)
+
+`network_devices.toml` に `[groups]` テーブルを追加すると、`send_command_to_group` でまとめて並列実行できます。
+
+```toml
+[groups]
+core_switches = ["switch_ssh", "c1200coreSW"]
+```
+
+グループ名の代わりに `all` を指定すると、インベントリ内の全デバイスが対象になります。
+
+### 4. 認証情報の暗号化 (任意)
+
+TOML内の平文パスワードが気になる場合、`password`/`secret` を暗号化できます。
+
+```bash
+# 1. 鍵を生成し、環境変数に設定(サーバー起動時にも同じ鍵が必要)
+export NETMIKO_MCP_SERVER_INVENTORY_KEY=$(uv run --with cryptography main.py --generate-key)
+
+# 2. パスワードを暗号化し、TOMLに貼り付ける
+uv run --with cryptography main.py --encrypt-value "mypassword"
+# => enc:gAAAAA...
+```
+
+```toml
+[router1]
+hostname = "192.0.2.10"
+device_type = "cisco_ios"
+password = "enc:gAAAAA..."
+```
+
+`NETMIKO_MCP_SERVER_INVENTORY_KEY` が未設定のまま暗号化済みの値を読み込もうとすると、起動時エラーになります。鍵はTOMLファイルに含めず、環境変数でのみ管理してください。
+
+### 5. サーバー起動
 
 #### stdio (ローカル)
 ```bash
@@ -98,6 +135,12 @@ uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.
 #### 監査ログ
 デフォルトで `~/.netmiko_mcp_server_audit.log` にJSON Lines形式で記録されます。パスを変えたい場合は `--audit-log-file /path/to/audit.log` を指定してください。
 
+#### 出力サイズ対策
+デフォルトで1000行を超える出力は自動的に `~/.netmiko_mcp_server_outputs/<device>/` 配下に保存され、`list_device_outputs`/`read_device_output` ツールでページングしながら読み出せます。閾値は `--output-save-threshold`、保存先は `--output-dir` で変更できます。
+
+#### グループ実行の並列数
+`send_command_to_group` の同時接続数はデフォルト10です。`--max-workers` で変更できます。
+
 #### Docker での起動
 まず、イメージをビルドします。
 
@@ -115,6 +158,17 @@ docker run -d -p 10000:10000 \
   --name netmiko-mcp netmiko-mcp-server \
   --sse --port 10000 --commands-file /app/commands.toml
 ```
+
+## MCP ツール一覧
+
+| ツール | 説明 |
+|---|---|
+| `get_network_device_list` | インベントリ内の全デバイス一覧を返す（認証情報は含まない） |
+| `send_command_and_get_output` | 単一デバイスにコマンドを送信。`use_textfsm`、`save_output` オプション付き |
+| `send_command_to_group` | デバイス名/グループ名/`all` に対してコマンドを並列実行 |
+| `list_device_outputs` | 保存済み出力ファイルの一覧を取得 |
+| `read_device_output` | 保存済み出力ファイルをページングして読み出し |
+| `set_config_commands_and_commit_or_save` | 設定変更コマンドを送信（`--enable-config` 必須） |
 
 ## Gemini CLI での利用 (例)
 Gemini CLI の MCP 設定にサーバー情報を登録してください。

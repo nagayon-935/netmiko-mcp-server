@@ -618,6 +618,7 @@ name = "netmiko-mcp-server"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "mcp", extra = ["cli"] },
     { name = "netmiko" },
     { name = "starlette" },
@@ -633,6 +634,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography" },
     { name = "mcp", extras = ["cli"] },
     { name = "netmiko" },
     { name = "starlette" },

@@ -9,8 +9,10 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 
 import inventory
+import output_store
 import server
 from audit import configure_audit_logger
+from credential_crypto import KEY_ENV_VAR, encrypt_value, generate_key
 from http_auth import BearerTokenMiddleware
 from security import load_command_policy, validate_command_lists
 
@@ -79,13 +81,69 @@ def main() -> None:
         action="store_true",
         help="enable starlette debug mode for SSE server",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=output_store.DEFAULT_OUTPUT_DIR,
+        help="directory for saved command output files",
+    )
+    parser.add_argument(
+        "--output-save-threshold",
+        type=int,
+        default=1000,
+        help="line count above which output is auto-saved instead of returned inline",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=10,
+        help="max concurrent connections for send_command_to_group",
+    )
+    parser.add_argument(
+        "--generate-key",
+        action="store_true",
+        help=f"print a new {KEY_ENV_VAR} value and exit (does not start the server)",
+    )
+    parser.add_argument(
+        "--encrypt-value",
+        type=str,
+        default=None,
+        metavar="VALUE",
+        help=(
+            f"encrypt VALUE using {KEY_ENV_VAR} from the environment, print the "
+            "result, and exit (does not start the server)"
+        ),
+    )
 
-    parser.add_argument("tomlpath", help="path to config toml file")
+    parser.add_argument(
+        "tomlpath", nargs="?", default=None, help="path to config toml file"
+    )
 
     args = parser.parse_args()
 
+    if args.generate_key:
+        print(generate_key())
+        return
+
+    if args.encrypt_value is not None:
+        key = os.environ.get(KEY_ENV_VAR, "").strip()
+        if not key:
+            raise SystemExit(
+                f"Startup Error: {KEY_ENV_VAR} must be set to encrypt a value."
+            )
+        print(encrypt_value(args.encrypt_value, key))
+        return
+
+    if args.tomlpath is None:
+        parser.error(
+            "tomlpath is required unless --generate-key or --encrypt-value is used"
+        )
+
     inventory.tomlpath = args.tomlpath
     server.enable_config = args.enable_config
+    server.output_save_threshold = args.output_save_threshold
+    server.max_workers = args.max_workers
+    output_store.output_dir = args.output_dir
 
     server.command_policy = load_command_policy(args.commands_file)
     policy_errors = validate_command_lists(server.command_policy)
