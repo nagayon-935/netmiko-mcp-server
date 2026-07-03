@@ -165,7 +165,7 @@ docker run -d -p 10000:10000 \
 |---|---|
 | `get_network_device_list` | インベントリ内の全デバイス一覧を返す（認証情報は含まない） |
 | `send_command_and_get_output` | 単一デバイスにコマンドを送信。`use_textfsm`、`save_output` オプション付き |
-| `send_command_to_group` | デバイス名/グループ名/`all` に対してコマンドを並列実行 |
+| `send_command_to_group` | デバイス名/グループ名/`all` に対してコマンドを並列実行。`use_textfsm`、`save_output` オプション付き |
 | `list_device_outputs` | 保存済み出力ファイルの一覧を取得 |
 | `read_device_output` | 保存済み出力ファイルをページングして読み出し |
 | `set_config_commands_and_commit_or_save` | 設定変更コマンドを送信（`--enable-config` 必須） |
@@ -183,14 +183,19 @@ Gemini CLI の MCP 設定にサーバー情報を登録してください。
 }
 ```
 
+Bearerトークン認証を有効にしている場合（デフォルト）、クライアント側から `Authorization: Bearer <token>` ヘッダーを送信する設定が別途必要です。ヘッダーの指定方法はAIクライアントごとに異なるため、各クライアントのMCPサーバー設定ドキュメントを確認してください。`--no-http-auth` で認証を無効化した場合は不要です（非推奨）。
+
 ## 注意
 - `device_type` は `netmiko` のサポート名を指定してください。
 - `secret` がある場合は自動で `enable()` を試みます。
 - `--commands-file` を指定しない場合、`send_command_and_get_output` は常に拒否されます（デフォルト全拒否）。
 - `set_config_commands_and_commit_or_save` は `--enable-config` を付けない限り常に拒否されます。
-- コマンドの許可/拒否リストは現状 `send_command_and_get_output`（show系）のみに適用されます。`--enable-config` で設定変更を有効化した場合、個別コマンドの検証は行われないため、信頼できる運用者のみが利用してください。
+- コマンドの許可/拒否リストは `send_command_and_get_output` と `send_command_to_group`（いずれもshow系）に適用されます。`--enable-config` で設定変更を有効化した場合、`set_config_commands_and_commit_or_save` に対する個別コマンドの検証は行われないため、信頼できる運用者のみが利用してください。
 
 ## 旧バージョンからの移行
 以前のバージョンにあった `--secured` フラグと `--disable-config` フラグは廃止されました。
 - `--secured`（先頭文字列によるブロックリスト）→ `--commands-file` によるallow/denyリストに置き換え
 - `--disable-config`（デフォルト有効・オプトアウト）→ `--enable-config`（デフォルト無効・オプトイン）に置き換え
+
+## License
+MIT License. 詳細は [LICENSE](LICENSE) を参照してください。
