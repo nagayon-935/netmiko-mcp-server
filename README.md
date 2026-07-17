@@ -17,6 +17,7 @@ NW機器をチャット形式で操作するためのMCPサーバーです。`ne
 - `[groups]` でグループ化した複数デバイスへの並列コマンド実行に対応
 - `use_textfsm=True` でntc-templatesによる構造化(JSON)出力に対応
 - インベントリの `password`/`secret` を暗号化して保存可能（Fernet対称鍵暗号）
+- `import_inventory.py` で対話的にインベントリを作成・追記可能（LLMトークン不要、フィールド別バリデーション付き）
 
 ## 使い方
 
