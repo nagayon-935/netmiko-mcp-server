@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Claude Code local configuration
+CLAUDE.md

@@ -9,6 +9,7 @@ dependencies = [
   "mcp[cli]",
   "netmiko",
   "starlette",
+  "tomlkit>=0.15.0",
   "uvicorn",
 ]
 
