@@ -9,7 +9,6 @@ tested without faking user input. Validation error messages are user-facing
 import ipaddress
 import os
 import re
-import shutil
 import tempfile
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from tomlkit import TOMLDocument
 from tomlkit.items import Array, Table
 
 from credential_crypto import encrypt_value
+from inventory import RESERVED_KEYS as RESERVED_TOML_KEYS
 
 VALID_DEVICE_TYPES: tuple[str, ...] = tuple(platforms) + tuple(telnet_platforms)
 
@@ -31,12 +31,37 @@ MAX_HOSTNAME_LEN = 253
 MIN_PORT = 1
 MAX_PORT = 65535
 
-# Top-level TOML keys that are not device tables (see inventory._RESERVED_KEYS).
-RESERVED_TOML_KEYS = frozenset({"default", "groups"})
+# RESERVED_TOML_KEYS (the non-device top-level keys) is imported from inventory
+# so the builder and the loader cannot disagree about what counts as a device.
 # 'q' is additionally reserved because the interactive UI uses it to quit.
 RESERVED_DEVICE_NAMES = RESERVED_TOML_KEYS | {"q"}
 
 SUGGESTION_LIMIT = 15
+
+# inventory.get_device_names() resolves device names before group names, so a
+# group sharing a device's name can never be selected. Reject the collision
+# from whichever side creates it.
+NAME_COLLIDES_WITH_GROUP = (
+    "'{name}' は同名のグループが存在するため使用できません"
+    "（同名だとグループを参照できなくなります）。"
+)
+GROUP_COLLIDES_WITH_DEVICE = (
+    "グループ名 '{name}' は同名のデバイスが存在するため使用できません"
+    "（同名だとグループを参照できなくなります）。"
+)
+# Mirrors the shape check in inventory.load_groups().
+GROUPS_NOT_A_TABLE = (
+    "'groups' はグループ名 = [デバイス名] のテーブルである必要があります。"
+)
+
+
+class InventoryDataError(ValueError):
+    """The inventory document itself is unusable (bad shape or a name clash).
+
+    A ValueError subclass so the prompt loops keep re-prompting on it, but a
+    distinct type so main() can report it as user-facing without also
+    swallowing unrelated ValueErrors raised by a genuine bug.
+    """
 
 
 @dataclass(frozen=True)
@@ -55,7 +80,9 @@ class EnteredDevice:
     groups: tuple[str, ...]
 
 
-def validate_device_name(raw: str, existing: Collection[str]) -> str:
+def validate_device_name(
+    raw: str, existing: Collection[str], group_names: Collection[str] = ()
+) -> str:
     name = raw.strip()
     if not name:
         raise ValueError("デバイス名を入力してください。")
@@ -67,6 +94,8 @@ def validate_device_name(raw: str, existing: Collection[str]) -> str:
         raise ValueError(f"'{name}' は予約されている名前のため使用できません。")
     if name in existing:
         raise ValueError(f"デバイス名 '{name}' は既に存在します。")
+    if name in group_names:
+        raise ValueError(NAME_COLLIDES_WITH_GROUP.format(name=name))
     return name
 
 
@@ -125,7 +154,9 @@ def validate_port(raw: str) -> int | None:
     return port
 
 
-def validate_group_names(raw: str) -> tuple[str, ...]:
+def validate_group_names(
+    raw: str, device_names: Collection[str] = ()
+) -> tuple[str, ...]:
     text = raw.strip()
     if not text:
         return ()
@@ -137,6 +168,8 @@ def validate_group_names(raw: str) -> tuple[str, ...]:
                 "グループ名には英数字、ハイフン、アンダースコアのみ使用できます"
                 "（カンマ区切り）。"
             )
+        if name in device_names:
+            raise ValueError(GROUP_COLLIDES_WITH_DEVICE.format(name=name))
         if name not in names:
             names.append(name)
     return tuple(names)
@@ -147,9 +180,25 @@ def collect_existing_names(doc: TOMLDocument) -> frozenset[str]:
     return frozenset(str(k) for k in doc.keys() if str(k) not in RESERVED_TOML_KEYS)
 
 
+def _require_group_table(groups: object) -> Table:
+    """Reject a `groups` value that is not a table, as inventory.load_groups does."""
+    if not isinstance(groups, dict):
+        raise InventoryDataError(GROUPS_NOT_A_TABLE)
+    return cast(Table, groups)
+
+
+def collect_existing_group_names(doc: TOMLDocument) -> frozenset[str]:
+    """Group names already defined in the document's `[groups]` table."""
+    groups = doc.get("groups")
+    if groups is None:
+        return frozenset()
+    return frozenset(str(k) for k in _require_group_table(groups))
+
+
 def count_devices_and_groups(doc: TOMLDocument) -> tuple[int, int]:
-    groups = doc.get("groups", {})
-    return len(collect_existing_names(doc)), len(groups)
+    groups = doc.get("groups")
+    n_groups = 0 if groups is None else len(_require_group_table(groups))
+    return len(collect_existing_names(doc)), n_groups
 
 
 def _maybe_encrypt(value: str, key: str | None) -> str:
@@ -185,8 +234,10 @@ def merge_devices(
     """
     for dev in devices:
         if dev.name in doc:
-            raise ValueError(f"デバイス '{dev.name}' は既にファイル内に存在します。")
-        if tomlkit.dumps(doc).strip():
+            raise InventoryDataError(
+                f"デバイス '{dev.name}' は既にファイル内に存在します。"
+            )
+        if doc.body:
             doc.add(tomlkit.nl())
         doc[dev.name] = device_to_table(dev, key)
     merge_groups(doc, devices)
@@ -196,9 +247,13 @@ def merge_groups(doc: TOMLDocument, devices: Sequence[EnteredDevice]) -> None:
     memberships = [(group, dev.name) for dev in devices for group in dev.groups]
     if not memberships:
         return
+    device_names = collect_existing_names(doc)
+    for group_name, _device_name in memberships:
+        if group_name in device_names:
+            raise InventoryDataError(GROUP_COLLIDES_WITH_DEVICE.format(name=group_name))
     if "groups" not in doc:
         doc["groups"] = tomlkit.table()
-    groups = cast(Table, doc["groups"])
+    groups = _require_group_table(doc["groups"])
     for group_name, device_name in memberships:
         if group_name not in groups:
             groups[group_name] = tomlkit.array()
@@ -208,9 +263,18 @@ def merge_groups(doc: TOMLDocument, devices: Sequence[EnteredDevice]) -> None:
 
 
 def backup_file(path: Path) -> Path:
-    """Copy path to path.bak (overwriting any previous backup) and return it."""
+    """Copy path to path.bak (overwriting any previous backup) and return it.
+
+    The backup is owner-only, like atomic_write(): shutil.copy2 would preserve
+    the source mode, so backing up a hand-written 0644 inventory would leave
+    its credentials world-readable. O_CREAT applies the mode only to a file it
+    creates, hence the explicit chmod for a pre-existing backup.
+    """
     backup = path.with_name(path.name + ".bak")
-    shutil.copy2(path, backup)
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as dst:
+        dst.write(path.read_bytes())
+    os.chmod(backup, 0o600)
     return backup
 
 

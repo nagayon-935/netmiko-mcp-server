@@ -59,9 +59,10 @@ uv run python import_inventory.py -f my_devices.toml
 ```
 
 - Prompts for each field (device name, hostname/IP with IPv4/IPv6/FQDN support, device_type from netmiko's platform list, etc.) with validation and re-prompting on invalid input. A wrong `device_type` shows partial-match suggestions. Enter `q` at the device-name prompt to finish and move to the save/confirm step.
-- If the target file already exists, choose **append / overwrite / abort**. Append mode preserves existing comments, key order, and already-encrypted (`enc:`) values untouched. Overwrite mode creates a `<filename>.bak` backup first.
-- Entering group names (comma-separated) per device automatically updates the `[groups]` table.
-- If `NETMIKO_MCP_SERVER_INVENTORY_KEY` is set, `password`/`secret` are encrypted automatically before saving (see [Encrypting credentials](#4-encrypting-credentials-optional)). If it isn't set, you can choose to save in plaintext or abort.
+- Passwords and the `enable` secret are always entered twice and must match, since neither is echoed.
+- If the target file already exists, choose **append / overwrite / abort**. Append mode preserves existing comments, key order, and already-encrypted (`enc:`) values untouched. Whenever the target file already exists — append as well as overwrite — a `<filename>.bak` backup is written first (`*.toml.bak` is gitignored because it can hold credentials).
+- Entering group names (comma-separated) per device automatically updates the `[groups]` table. A group may not share a name with a device: the inventory resolves device names first, so a same-named group could never be selected.
+- If `NETMIKO_MCP_SERVER_INVENTORY_KEY` is set, `password`/`secret` are encrypted automatically before saving (see [Encrypting credentials](#4-encrypting-credentials-optional)). If it isn't set, you can choose to save in plaintext or abort. This is asked *before* any device is entered, so aborting never discards typed input.
 - The file is written atomically with owner-only permissions (0600), and the saved file is round-trip verified through the inventory loader after writing.
 - Out of scope: editing/deleting existing devices, creating the `[default]` section, and prompting for `pre_commands` / `ansi_escape_codes` / timeout fields (edit these by hand). Note that in append mode, if an existing `[groups]` table is at the end of the file, new device tables are appended after it — this is still valid TOML and loads correctly.
 

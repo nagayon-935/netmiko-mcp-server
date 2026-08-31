@@ -13,8 +13,9 @@ from credential_crypto import decrypt_value, is_encrypted
 logger = logging.getLogger("netmiko-mcp-server")
 
 # TOML keys that are not device definitions and must be skipped when parsing
-# device entries out of the inventory file.
-_RESERVED_KEYS = frozenset({"default", "groups"})
+# device entries out of the inventory file. inventory_builder imports this so
+# the two modules cannot drift apart.
+RESERVED_KEYS = frozenset({"default", "groups"})
 
 # Device fields that may hold an encrypted (`enc:`-prefixed) value.
 _ENCRYPTABLE_FIELDS = ("password", "secret")
@@ -170,7 +171,7 @@ def load_config_toml() -> dict[str, Device]:
         default_args = data["default"]
 
     for name, v in data.items():
-        if name in _RESERVED_KEYS:
+        if name in RESERVED_KEYS:
             continue
         if not isinstance(v, dict):
             raise ValueError(f"unexpected value in toml: {v}")

@@ -1,4 +1,7 @@
 **/network_devices.toml
+# Backups written by import_inventory.py; may contain plaintext credentials
+# when NETMIKO_MCP_SERVER_INVENTORY_KEY is unset.
+*.toml.bak
 **/.DS_Store
 __pycache__/
 *.pyc

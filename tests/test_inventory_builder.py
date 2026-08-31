@@ -10,8 +10,10 @@ import tomlkit
 from credential_crypto import KEY_ENV_VAR, decrypt_value, generate_key
 from inventory_builder import (
     EnteredDevice,
+    InventoryDataError,
     atomic_write,
     backup_file,
+    collect_existing_group_names,
     collect_existing_names,
     count_devices_and_groups,
     device_to_table,
@@ -316,6 +318,46 @@ def test_count_devices_and_groups_counts_tables() -> None:
     assert count_devices_and_groups(doc) == (1, 1)
 
 
+def test_collect_existing_group_names_reads_groups_table() -> None:
+    doc = tomlkit.parse(EXISTING_TOML)
+
+    assert collect_existing_group_names(doc) == frozenset({"core"})
+
+
+def test_collect_existing_group_names_empty_without_groups_table() -> None:
+    assert collect_existing_group_names(tomlkit.document()) == frozenset()
+
+
+@pytest.mark.parametrize("fn", [count_devices_and_groups, collect_existing_group_names])
+def test_non_table_groups_is_rejected(fn: Any) -> None:
+    doc = tomlkit.parse('groups = "oops"\n')
+
+    with pytest.raises(InventoryDataError, match="groups"):
+        fn(doc)
+
+
+def test_merge_groups_rejects_group_named_after_a_device() -> None:
+    doc = tomlkit.parse(EXISTING_TOML)
+
+    with pytest.raises(InventoryDataError, match="同名のデバイス"):
+        merge_groups(doc, [make_device(name="r2", groups=("r1",))])
+
+
+def test_inventory_data_error_is_a_value_error() -> None:
+    """Prompt loops catch ValueError, so the subclass must stay re-promptable."""
+    assert issubclass(InventoryDataError, ValueError)
+
+
+def test_validate_device_name_rejects_existing_group_name() -> None:
+    with pytest.raises(ValueError, match="同名のグループ"):
+        validate_device_name("core", set(), {"core"})
+
+
+def test_validate_group_names_rejects_existing_device_name() -> None:
+    with pytest.raises(ValueError, match="同名のデバイス"):
+        validate_group_names("core", {"core"})
+
+
 # ---------------------------------------------------------------------------
 # atomic_write / backup_file
 # ---------------------------------------------------------------------------
@@ -349,3 +391,29 @@ def test_backup_file_copies_content(tmp_path: Path) -> None:
     assert backup == tmp_path / "devices.toml.bak"
     assert backup.read_text() == "x = 1\n"
     assert target.read_text() == "x = 1\n"
+
+
+def test_backup_file_is_owner_only_even_for_world_readable_source(
+    tmp_path: Path,
+) -> None:
+    """A backup must not inherit a hand-written inventory's 0644 mode."""
+    target = tmp_path / "devices.toml"
+    target.write_text('password = "plaintext"\n')
+    target.chmod(0o644)
+
+    backup = backup_file(target)
+
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+
+def test_backup_file_tightens_a_preexisting_loose_backup(tmp_path: Path) -> None:
+    target = tmp_path / "devices.toml"
+    target.write_text('password = "plaintext"\n')
+    stale = tmp_path / "devices.toml.bak"
+    stale.write_text("old\n")
+    stale.chmod(0o644)
+
+    backup = backup_file(target)
+
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert backup.read_text() == 'password = "plaintext"\n'
