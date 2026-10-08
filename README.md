@@ -141,6 +141,14 @@ If `NETMIKO_MCP_SERVER_INVENTORY_KEY` is not set while an encrypted value is bei
 
 ### 5. Starting the server
 
+Check setup before starting the server:
+
+```bash
+uv run --frozen python main.py network_devices.toml --commands-file commands.toml --doctor
+```
+
+`--doctor` validates inventory and group references, decrypts encrypted credentials for validation, checks SSH key paths, command policies, storage accessibility, and numeric limits. With `--sse`, it also checks bind/subnet/port settings and bearer-token presence. It does not connect to devices, bind a port, start MCP, or write files. Use the same options and environment as the intended server startup. Add `--doctor-json` for machine-readable checks and remedies. Exit status is 1 for errors and 0 otherwise; warnings such as deny-all are reported without failing the check. Passing offline checks does not verify connectivity or guarantee later filesystem writes.
+
 #### stdio (local)
 ```bash
 uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
