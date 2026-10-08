@@ -229,11 +229,15 @@ docker run -d -p 10000:10000 \
 | ツール | 説明 |
 |---|---|
 | `get_network_device_list` | インベントリ内の全デバイス一覧を返す（認証情報は含まない） |
+| `get_server_capabilities` | 現在の許可・拒否ルール、設定変更の有効状態、出力上限を取得 |
+| `check_command_permission` | 機器へ接続・実行せずにコマンドの実行可否を確認 |
 | `send_command_and_get_output` | 単一デバイスにコマンドを送信。`use_textfsm`、`save_output` オプション付き |
 | `send_command_to_group` | デバイス名/グループ名/`all` に対してコマンドを並列実行。`use_textfsm`、`save_output` オプション付き |
 | `list_device_outputs` | 保存済み出力ファイルの一覧を取得 |
 | `read_device_output` | 保存済み出力ファイルをページングして読み出し |
 | `set_config_commands_and_commit_or_save` | 設定変更コマンドを送信（`--enable-config` 必須） |
+
+コマンドを選ぶ前に `get_server_capabilities` を呼び、`check_command_permission(command, configuration=False)` で個別の判定を確認できます。設定変更のベースライン保護を含め、拒否ルールは常に優先されます。どちらも機器に接続せず、権限も変更しません。許可判定は機器での動作を保証するものではなく、実行時にも再検証します。コマンドファイルの変更にはサーバーの再起動が必要です。
 
 ## Gemini CLI での利用 (例)
 Gemini CLI の MCP 設定にサーバー情報を登録してください。

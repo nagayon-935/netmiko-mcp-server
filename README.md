@@ -229,11 +229,15 @@ docker run -d -p 10000:10000 \
 | Tool | Description |
 |---|---|
 | `get_network_device_list` | Returns the list of all devices in the inventory (no credentials included) |
+| `get_server_capabilities` | Returns active allow/deny rules, configuration availability, and output limits |
+| `check_command_permission` | Checks a command against the active policy without connecting or executing |
 | `send_command_and_get_output` | Sends a command to a single device, with `use_textfsm` and `save_output` options |
 | `send_command_to_group` | Runs a command in parallel across a device name, group name, or `all`, with `use_textfsm` and `save_output` options |
 | `list_device_outputs` | Lists saved output files |
 | `read_device_output` | Reads a saved output file with paging |
 | `set_config_commands_and_commit_or_save` | Sends configuration-change commands (requires `--enable-config`) |
+
+Call `get_server_capabilities` before choosing commands, then use `check_command_permission(command, configuration=False)` for an exact decision. Deny rules always win, including baseline configuration denies. Neither tool connects to a device or changes permissions; an allowed decision does not guarantee device compatibility. Execution tools validate again. Command-file changes require a server restart.
 
 ## Using it from the Gemini CLI (example)
 Register the server in the Gemini CLI's MCP configuration.

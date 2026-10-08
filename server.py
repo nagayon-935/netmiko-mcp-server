@@ -17,7 +17,12 @@ from audit import (
     log_connection_outcome,
 )
 from inventory import Device, get_device_names, load_config_toml, load_inventory
-from security import CommandPolicy, validate_command, validate_config_command
+from security import (
+    BASELINE_CONFIG_DENIED_COMMANDS,
+    CommandPolicy,
+    validate_command,
+    validate_config_command,
+)
 
 logger = logging.getLogger("netmiko-mcp-server")
 
@@ -38,6 +43,67 @@ output_save_threshold: int = 1000
 max_workers: int = 10
 
 mcp = FastMCP("netmiko server", dependencies=["netmiko"])
+
+
+@mcp.tool()
+def get_server_capabilities() -> dict[str, Any]:
+    """Discover active permissions and output limits before requesting commands.
+
+    This tool never connects to a device. Rules are from the currently loaded
+    policy; deny rules take precedence and unmatched commands are denied.
+    Use check_command_permission for an exact decision, including baseline
+    configuration denies. Discovery does not grant or change permissions.
+    """
+    return {
+        "default_deny": True,
+        "configuration_enabled": enable_config,
+        "show_commands": {
+            "allowed_commands": list(command_policy.allowed_commands),
+            "denied_commands": list(command_policy.denied_commands),
+        },
+        "configuration_commands": {
+            "allowed_commands": list(config_command_policy.allowed_commands),
+            "denied_commands": list(
+                dict.fromkeys(
+                    config_command_policy.denied_commands
+                    + BASELINE_CONFIG_DENIED_COMMANDS
+                )
+            ),
+        },
+        "matching": {
+            "case_sensitive": False,
+            "deny_takes_precedence": True,
+            "glob": "Only a single trailing '*' is supported; 'cmd *' requires an argument.",
+        },
+        "output_save_threshold": output_save_threshold,
+        "max_workers": max_workers,
+        "policy_reload": "Restart the server after changing the commands file.",
+    }
+
+
+@mcp.tool()
+def check_command_permission(
+    command: str, configuration: bool = False
+) -> dict[str, Any]:
+    """Check one command without connecting, executing, or changing permissions.
+
+    configuration selects configuration-mode rules. An allowed result is
+    only a policy decision, not proof of connectivity or device compatibility.
+    The execution tools always validate commands again at execution time.
+    """
+    result = (
+        validate_config_command(command, config_command_policy)
+        if configuration
+        else validate_command(command, command_policy)
+    )
+    disabled = configuration and not enable_config
+    return {
+        "allowed": result.allowed and not disabled,
+        "reason": "CONFIG_MODE_DISABLED" if disabled else result.reason,
+        "normalized_command": result.normalized_command,
+        "configuration": configuration,
+        "executed": False,
+    }
 
 
 @mcp.tool()
