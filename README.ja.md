@@ -105,7 +105,9 @@ config_denied_commands = [
 
 さらに、`shutdown`（インターフェースを止める）と`clear*`は、上記の設定に関わらず**常に拒否**されます（コード側にハードコードされたベースライン保護。`security.py`の`BASELINE_CONFIG_DENIED_COMMANDS`）。`config_allowed_commands`に明示的に書いても上書きできません。`no shutdown`（インターフェースを起こす方向）は危険側の操作ではないためベースライン拒否には含まれていません。
 
-### 3. デバイスグループ (任意)
+### 3. デバイスのメタデータとグループ (任意)
+
+#### メタデータ
 
 デバイステーブルには検索用の公開メタデータを任意で追加できます。
 
@@ -120,7 +122,9 @@ description = "東京拠点のコアスイッチ"
 tags = ["bgp", "critical"]
 ```
 
-メタデータはMCPクライアントへ公開するため、認証情報などの秘密情報は含めないでください。Netmikoには渡しません。`get_network_device_list` はメタデータと所属グループを含めて返し、`get_network_group_list` はグループと重複を除いた機器名を返します。`find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` は接続・実行せずに候補を検索します。自由文は大文字小文字を区別しない部分一致、その他の条件は大文字小文字を区別しない完全一致で、すべての条件を満たす機器を返します。`limit` は1〜100です。結果には `matches`、`total`、`truncated`、`requires_selection`、`executed=false` を含みます。候補の曖昧さは件数制限前に判定するため、選択肢を提示してから正確な登録名で実行してください。`all` は予約名です。グループと機器の同名は一覧・検索時に拒否し、デバイスの `name` でTOMLテーブル名を上書きすることもできません。
+メタデータはMCPクライアントへ公開するため、認証情報などの秘密情報は含めないでください。Netmikoには渡しません。デバイスの `name` でTOMLテーブル名を上書きすることもできません。
+
+#### グループ
 
 `network_devices.toml` に `[groups]` テーブルを追加すると、`send_command_to_group` でまとめて並列実行できます。
 
@@ -129,9 +133,17 @@ tags = ["bgp", "critical"]
 core_switches = ["switch_ssh", "c1200coreSW"]
 ```
 
-グループ名の代わりに `all` を指定すると、インベントリ内の全デバイスが対象になります。
+- グループのメンバーにはデバイス名の文字列配列を指定してください。同じデバイスが重複していても実行は1回です。
+- グループ名の代わりに `all` を指定すると、インベントリ内の全デバイスが対象になります。`all` は予約名で、グループと機器の同名は一覧・検索時に拒否されます。
+- グループへのコマンド実行ではデバイスとグループを一度に読み込み、実行中に異なる版のインベントリが混ざることを防ぎます。ファイルへの変更は次の呼び出しから反映されます。
 
-グループのメンバーにはデバイス名の文字列配列を指定してください。同じデバイスが重複していても実行は1回です。グループへのコマンド実行ではデバイスとグループを一度に読み込み、実行中に異なる版のインベントリが混ざることを防ぎます。ファイルへの変更は次の呼び出しから反映されます。
+#### 探索ツール
+
+- `get_network_device_list` は公開メタデータと所属グループを返します。
+- `get_network_group_list` はグループと重複を除いた機器名を返します。
+- `find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` は接続・実行せずに候補を検索します。自由文は大文字小文字を区別しない部分一致、その他の条件は大文字小文字を区別しない完全一致で、すべての条件を満たす機器を返します。`limit` は1〜100です。
+  - 結果には `matches`、`total`、`truncated`、`requires_selection`、`executed=false` を含みます。
+  - 候補の曖昧さは件数制限前に判定するため、選択肢をユーザーに提示してから正確な登録名で実行してください。
 
 ### 4. 認証情報の暗号化 (任意)
 
@@ -139,10 +151,10 @@ TOML内の平文パスワードが気になる場合、`password`/`secret` を�
 
 ```bash
 # 1. 鍵を生成し、環境変数に設定(サーバー起動時にも同じ鍵が必要)
-export NETMIKO_MCP_SERVER_INVENTORY_KEY=$(uv run --with cryptography main.py --generate-key)
+export NETMIKO_MCP_SERVER_INVENTORY_KEY=$(uv run --frozen python main.py --generate-key)
 
 # 2. パスワードを暗号化し、TOMLに貼り付ける
-uv run --with cryptography main.py --encrypt-value "mypassword"
+uv run --frozen python main.py --encrypt-value "mypassword"
 # => enc:gAAAAA...
 ```
 
@@ -157,17 +169,22 @@ password = "enc:gAAAAA..."
 
 ### 5. サーバー起動
 
-起動前に設定を診断できます。
+#### 起動前の診断 (`--doctor`)
+
+実際の起動と同じオプション・環境変数で、起動前に設定を診断できます。
 
 ```bash
 uv run --frozen python main.py network_devices.toml --commands-file commands.toml --doctor
 ```
 
-`--doctor` はインベントリとグループ参照、暗号化情報の復号、SSH鍵のパス、コマンドポリシー、保存先へのアクセス、数値オプションを確認します。`--sse` 指定時はbind・サブネット・ポート設定とBearerトークンの有無も確認します。機器への接続、ポートの待ち受け、MCPの起動、ファイル書き込みは行いません。実際の起動と同じオプション・環境変数で実行してください。`--doctor-json` を追加すると判定と対応方法をJSONで取得できます。エラーがあれば終了コード1、それ以外は0です。全拒否などの警告も表示します。オフライン診断の成功は接続性や、その後のファイル書き込みを保証するものではありません。
+- インベントリとグループ参照、暗号化情報の復号、SSH鍵のパス、コマンドポリシー、保存先へのアクセス、数値オプションを確認します。`--sse` 指定時はbind・サブネット・ポート設定とBearerトークンの有無も確認します。
+- 機器への接続、ポートの待ち受け、MCPの起動、ファイル書き込みは行いません。オフライン診断の成功は接続性や、その後のファイル書き込みを保証するものではありません。
+- `--doctor-json` を追加すると判定と対応方法をJSONで取得できます。
+- エラーがあれば終了コード1、それ以外は0です。全拒否などの警告も表示します。
 
 #### stdio (ローカル)
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml
 ```
 
@@ -181,7 +198,7 @@ export NETMIKO_MCP_SERVER_BEARER_TOKEN="$(openssl rand -hex 32)"
 ```
 
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml \
   --sse --bind 10.70.72.1 --port 10000
 ```
@@ -190,11 +207,11 @@ SSE URL 例: `http://<server-ip>:10000/sse`（クライアント側で `Authoriz
 
 `NETMIKO_MCP_SERVER_BEARER_TOKEN` を設定せずに `--sse` を起動しようとすると、起動時エラーで停止します。認証なしで動かしたい場合のみ `--no-http-auth` を明示的に付けてください（非推奨）。
 
-#### 10.70.72.0/24 以外を遮断する設定
-SSE モードでは `--allowed-subnet` で許可サブネットを指定できます（カンマ区切り）。デフォルトは `0.0.0.0/0` です。Bearerトークン認証と併用することで多層防御になります。
+#### サブネットによるアクセス制限
+SSE モードでは `--allowed-subnet` で許可サブネットを指定できます（カンマ区切り。例: `10.70.72.0/24`）。デフォルトは `0.0.0.0/0` です。Bearerトークン認証と併用することで多層防御になります。
 
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml \
   --sse --bind 10.70.72.1 --allowed-subnet 10.70.72.0/24,127.0.0.1/32 --port 10000
 ```
@@ -283,10 +300,8 @@ Bearerトークン認証を有効にしている場合（デフォルト）、�
 ## 注意
 - `device_type` は `netmiko` のサポート名を指定してください。
 - `secret` がある場合は自動で `enable()` を試みます。
-- `--commands-file` を指定しない場合、`send_command_and_get_output` は常に拒否されます（デフォルト全拒否）。
-- `set_config_commands_and_commit_or_save` は `--enable-config` を付けない限り常に拒否されます。
-- `send_command_and_get_output`/`send_command_to_group`（show系）には`allowed_commands`/`denied_commands`が、`set_config_commands_and_commit_or_save`（設定変更）には`config_allowed_commands`/`config_denied_commands`が適用されます。`--commands-file`未指定、または`config_allowed_commands`未指定の場合はそれぞれ全拒否です。
-- `shutdown`と`clear*`は設定にかかわらず常に拒否されます（ベースライン保護、詳細は上記「コマンド許可リスト」参照）。それ以外の設定コマンドについては、`config_allowed_commands`の範囲内で信頼できる運用者のみが利用してください。
+- show系ツール（`send_command_and_get_output`、`send_command_to_group`）には`allowed_commands`/`denied_commands`が、`set_config_commands_and_commit_or_save`には`config_allowed_commands`/`config_denied_commands`が適用され、さらに`--enable-config`が必要です。該当リストが未指定の場合は全拒否です（[コマンド許可リスト](#2-コマンド許可リスト-toml)参照）。
+- 設定コマンドは、`config_allowed_commands`の範囲内で信頼できる運用者のみが利用してください。
 
 ## 旧バージョンからの移行
 以前のバージョンにあった `--secured` フラグと `--disable-config` フラグは廃止されました。

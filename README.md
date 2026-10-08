@@ -105,7 +105,9 @@ config_denied_commands = [
 
 In addition, `shutdown` (bringing an interface down) and `clear*` are **always denied** regardless of the above configuration (a hardcoded baseline protection — see `BASELINE_CONFIG_DENIED_COMMANDS` in `security.py`). Listing them in `config_allowed_commands` cannot override this. `no shutdown` (bringing an interface back up) is not on the dangerous side of the operation, so it is not included in the baseline deny list.
 
-### 3. Device groups (optional)
+### 3. Device metadata and groups (optional)
+
+#### Metadata
 
 Device tables can include optional public search metadata:
 
@@ -120,7 +122,9 @@ description = "Tokyo core switch"
 tags = ["bgp", "critical"]
 ```
 
-Metadata is exposed to MCP clients and must not contain passwords or other secrets. It is not sent to Netmiko. `get_network_device_list` includes metadata and group memberships; `get_network_group_list` lists groups and deduplicated member names. `find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` returns candidates without connecting or executing. Free text uses case-insensitive substrings; other filters use case-insensitive exact matching and combine with AND. `limit` is 1-100. The response includes `matches`, `total`, `truncated`, `requires_selection`, and `executed=false`. Ambiguity is calculated before truncation: present choices and use an exact registered name for execution. `all` is reserved, group/device name collisions are rejected during discovery, and a device's `name` cannot override its TOML table name.
+Metadata is exposed to MCP clients, so it must not contain passwords or other secrets. It is not sent to Netmiko, and a device's `name` cannot override its TOML table name.
+
+#### Groups
 
 Add a `[groups]` table to `network_devices.toml` to run commands in parallel across a set of devices with `send_command_to_group`.
 
@@ -129,9 +133,17 @@ Add a `[groups]` table to `network_devices.toml` to run commands in parallel acr
 core_switches = ["switch_ssh", "c1200coreSW"]
 ```
 
-Use `all` instead of a group name to target every device in the inventory.
+- Group members must be arrays of device-name strings. Duplicate members are executed once.
+- Use `all` instead of a group name to target every device. `all` is reserved, and a group may not share a name with a device (rejected during discovery).
+- Each group command reads devices and groups together once, so inventory changes take effect on the next call without mixing versions during execution.
 
-Group members must be arrays of device-name strings. Duplicate members are executed once. Each group command reads devices and groups together once, so inventory changes take effect on the next call without mixing versions during execution.
+#### Discovery tools
+
+- `get_network_device_list` returns public metadata and group memberships.
+- `get_network_group_list` lists groups and deduplicated member names.
+- `find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` returns candidates without connecting or executing. Free text uses case-insensitive substrings; other filters use case-insensitive exact matching, and all conditions combine with AND. `limit` is 1-100.
+  - The response includes `matches`, `total`, `truncated`, `requires_selection`, and `executed=false`.
+  - Ambiguity is calculated before truncation: present the choices to the user and execute with an exact registered name.
 
 ### 4. Encrypting credentials (optional)
 
@@ -139,10 +151,10 @@ If plaintext passwords in the TOML file are a concern, `password`/`secret` can b
 
 ```bash
 # 1. Generate a key and set it as an environment variable (the server needs the same key at startup)
-export NETMIKO_MCP_SERVER_INVENTORY_KEY=$(uv run --with cryptography main.py --generate-key)
+export NETMIKO_MCP_SERVER_INVENTORY_KEY=$(uv run --frozen python main.py --generate-key)
 
 # 2. Encrypt the password and paste the result into the TOML file
-uv run --with cryptography main.py --encrypt-value "mypassword"
+uv run --frozen python main.py --encrypt-value "mypassword"
 # => enc:gAAAAA...
 ```
 
@@ -157,17 +169,22 @@ If `NETMIKO_MCP_SERVER_INVENTORY_KEY` is not set while an encrypted value is bei
 
 ### 5. Starting the server
 
-Check setup before starting the server:
+#### Checking setup (`--doctor`)
+
+Check setup before starting the server, using the same options and environment as the intended startup:
 
 ```bash
 uv run --frozen python main.py network_devices.toml --commands-file commands.toml --doctor
 ```
 
-`--doctor` validates inventory and group references, decrypts encrypted credentials for validation, checks SSH key paths, command policies, storage accessibility, and numeric limits. With `--sse`, it also checks bind/subnet/port settings and bearer-token presence. It does not connect to devices, bind a port, start MCP, or write files. Use the same options and environment as the intended server startup. Add `--doctor-json` for machine-readable checks and remedies. Exit status is 1 for errors and 0 otherwise; warnings such as deny-all are reported without failing the check. Passing offline checks does not verify connectivity or guarantee later filesystem writes.
+- Validates inventory and group references, decrypts encrypted credentials for validation, and checks SSH key paths, command policies, storage accessibility, and numeric limits. With `--sse`, it also checks bind/subnet/port settings and bearer-token presence.
+- Does not connect to devices, bind a port, start MCP, or write files. Passing these offline checks does not verify connectivity or guarantee later filesystem writes.
+- Add `--doctor-json` for machine-readable checks and remedies.
+- Exit status is 1 for errors and 0 otherwise; warnings such as deny-all are reported without failing the check.
 
 #### stdio (local)
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml
 ```
 
@@ -181,7 +198,7 @@ export NETMIKO_MCP_SERVER_BEARER_TOKEN="$(openssl rand -hex 32)"
 ```
 
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml \
   --sse --bind 10.70.72.1 --port 10000
 ```
@@ -190,11 +207,11 @@ Example SSE URL: `http://<server-ip>:10000/sse` (the client must send an `Author
 
 Starting `--sse` without `NETMIKO_MCP_SERVER_BEARER_TOKEN` set stops the server with a startup error. Only pass `--no-http-auth` explicitly if you want to run without authentication (not recommended).
 
-#### Restricting access to a specific subnet (e.g. 10.70.72.0/24)
-In SSE mode, `--allowed-subnet` lets you specify allowed subnets (comma-separated). The default is `0.0.0.0/0`. Combining this with Bearer token authentication provides defense in depth.
+#### Restricting access by subnet
+In SSE mode, `--allowed-subnet` lets you specify allowed subnets (comma-separated, e.g. `10.70.72.0/24`). The default is `0.0.0.0/0`. Combining this with Bearer token authentication provides defense in depth.
 
 ```bash
-uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
+uv run --frozen python main.py /path/to/devices.toml \
   --commands-file /path/to/commands.toml \
   --sse --bind 10.70.72.1 --allowed-subnet 10.70.72.0/24,127.0.0.1/32 --port 10000
 ```
@@ -283,10 +300,8 @@ If Bearer token authentication is enabled (the default), the client also needs t
 ## Notes
 - Set `device_type` to a name supported by `netmiko`.
 - If `secret` is set, `enable()` is attempted automatically.
-- Without `--commands-file`, `send_command_and_get_output` is always denied (deny-by-default).
-- `set_config_commands_and_commit_or_save` is always denied unless `--enable-config` is passed.
-- `send_command_and_get_output`/`send_command_to_group` (show-style commands) are governed by `allowed_commands`/`denied_commands`; `set_config_commands_and_commit_or_save` (configuration changes) is governed by `config_allowed_commands`/`config_denied_commands`. Everything is denied if `--commands-file` (or `config_allowed_commands`) is not set.
-- `shutdown` and `clear*` are always denied regardless of configuration (baseline protection; see "Command allowlist" above for details). For other configuration commands, only trusted operators should use them, and only within the scope of `config_allowed_commands`.
+- Show-style tools (`send_command_and_get_output`, `send_command_to_group`) use `allowed_commands`/`denied_commands`; `set_config_commands_and_commit_or_save` uses `config_allowed_commands`/`config_denied_commands` and also requires `--enable-config`. Everything is denied when the relevant list is unset (see [Command allowlist](#2-command-allowlist-toml)).
+- Only trusted operators should use configuration commands, and only within the scope of `config_allowed_commands`.
 
 ## Migrating from older versions
 The `--secured` and `--disable-config` flags from earlier versions have been removed.
