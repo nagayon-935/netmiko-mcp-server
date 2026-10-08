@@ -1,3 +1,5 @@
+import pytest
+
 from security import (
     REASON_ALLOWED,
     REASON_DENY_MATCH,
@@ -5,6 +7,7 @@ from security import (
     REASON_UNSAFE_CHAR,
     CommandPolicy,
     load_command_policy,
+    load_command_policies,
     load_config_command_policy,
     validate_command,
     validate_command_lists,
@@ -166,3 +169,46 @@ def test_validate_config_command_baseline_deny_applies_without_toml_loader():
     policy = CommandPolicy(allowed_commands=("shutdown", "clear*"))
     assert validate_config_command("shutdown", policy).allowed is False
     assert validate_config_command("clear counters", policy).allowed is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "allowed_commands",
+        "denied_commands",
+        "config_allowed_commands",
+        "config_denied_commands",
+    ],
+)
+@pytest.mark.parametrize(
+    "value", ['"show version"', '["show version", 42]', "true", '[""]', '["   "]']
+)
+def test_policy_loader_rejects_malformed_command_lists(tmp_path, field, value):
+    path = tmp_path / "commands.toml"
+    path.write_text(f"{field} = {value}\n")
+
+    with pytest.raises(ValueError, match=field):
+        load_command_policies(str(path))
+
+
+def test_combined_policy_loader_reads_one_file_version(tmp_path, monkeypatch):
+    import security
+
+    path = tmp_path / "commands.toml"
+    path.write_text(
+        'allowed_commands = ["show version"]\nconfig_allowed_commands = ["description *"]\n'
+    )
+    original_load = security.tomllib.load
+    reads = []
+
+    def load_once(f):
+        reads.append(True)
+        return original_load(f)
+
+    monkeypatch.setattr(security.tomllib, "load", load_once)
+
+    show, config = load_command_policies(str(path))
+
+    assert show.allowed_commands == ("show version",)
+    assert config.allowed_commands == ("description *",)
+    assert len(reads) == 1

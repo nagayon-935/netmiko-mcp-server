@@ -16,6 +16,7 @@ allowing more than intended.
 import re
 import tomllib
 from dataclasses import dataclass
+from typing import Any
 
 # Characters permitted in a submitted command. Deliberately excludes
 # newline/carriage-return/tab and Unicode whitespace lookalikes so a command
@@ -57,22 +58,39 @@ class CommandPolicy:
     denied_commands: tuple[str, ...] = ()
 
 
+def _load_policy_data(path: str | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _policy_from_data(data: dict[str, Any], prefix: str = "") -> CommandPolicy:
+    entries: list[tuple[str, ...]] = []
+    for field in ("allowed_commands", "denied_commands"):
+        key = prefix + field
+        values = data.get(key, [])
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) and value.strip() for value in values
+        ):
+            raise ValueError(f"'{key}' must be an array of non-empty command strings")
+        entries.append(tuple(values))
+    return CommandPolicy(allowed_commands=entries[0], denied_commands=entries[1])
+
+
+def load_command_policies(path: str | None) -> tuple[CommandPolicy, CommandPolicy]:
+    """Read show and configuration policies from the same version of a file."""
+    data = _load_policy_data(path)
+    return _policy_from_data(data), _policy_from_data(data, "config_")
+
+
 def load_command_policy(path: str | None) -> CommandPolicy:
     """Load the allow/deny command policy from a TOML file.
 
     Returns an empty policy (deny-all) when path is None. This is the safe
     default: without an explicit commands file, no command is permitted.
     """
-    if path is None:
-        return CommandPolicy()
-
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-
-    return CommandPolicy(
-        allowed_commands=tuple(data.get("allowed_commands", [])),
-        denied_commands=tuple(data.get("denied_commands", [])),
-    )
+    return _policy_from_data(_load_policy_data(path))
 
 
 def load_config_command_policy(path: str | None) -> CommandPolicy:
@@ -80,21 +98,11 @@ def load_config_command_policy(path: str | None) -> CommandPolicy:
 
     Reads config_allowed_commands / config_denied_commands from the same TOML
     file as load_command_policy (a separate --commands-file is not needed).
-    BASELINE_CONFIG_DENIED_COMMANDS is always appended to denied_commands.
+    Baseline denies are enforced by validate_config_command.
 
-    Returns a policy with only the baseline denies (deny-all, since
-    allowed_commands is empty) when path is None.
+    Returns an empty policy (deny-all) when path is None.
     """
-    if path is None:
-        return CommandPolicy()
-
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-
-    return CommandPolicy(
-        allowed_commands=tuple(data.get("config_allowed_commands", [])),
-        denied_commands=tuple(data.get("config_denied_commands", [])),
-    )
+    return _policy_from_data(_load_policy_data(path), "config_")
 
 
 def _invalid_glob_entries(entries: tuple[str, ...]) -> list[str]:
@@ -161,8 +169,8 @@ def validate_command(command: str, policy: CommandPolicy) -> ValidationResult:
     """Validate a command against the given allow/deny policy.
 
     Rules, applied in order:
-    1. Whitespace is normalized (runs collapsed to a single space, stripped).
-    2. Only characters in ALLOWED_COMMAND_CHARS are permitted.
+    1. Only characters in ALLOWED_COMMAND_CHARS are permitted in the raw command.
+    2. Whitespace is normalized (runs collapsed to a single space, stripped).
     3. denied_commands is checked first and always wins over allowed_commands.
     4. The command must match an entry in allowed_commands, or it is denied.
     """

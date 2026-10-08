@@ -87,6 +87,8 @@ denied_commands = [
 
 Adding `config_allowed_commands`/`config_denied_commands` to the same `commands.toml` applies allow/deny checks to each line passed to `set_config_commands_and_commit_or_save` (denied entirely if unset). If even one command in the batch is denied, nothing is sent to the device.
 
+All four command lists must be arrays of non-empty strings; malformed lists stop server startup. An empty configuration batch is rejected and audited before connecting to a device.
+
 ```toml
 config_allowed_commands = [
   "interface *",
@@ -112,6 +114,8 @@ core_switches = ["switch_ssh", "c1200coreSW"]
 ```
 
 Use `all` instead of a group name to target every device in the inventory.
+
+Group members must be arrays of device-name strings. Duplicate members are executed once. Each group command reads devices and groups together once, so inventory changes take effect on the next call without mixing versions during execution.
 
 ### 4. Encrypting credentials (optional)
 
@@ -176,6 +180,8 @@ By default, entries are recorded in JSON Lines format at `~/.netmiko_mcp_server_
 
 #### Handling large output
 By default, output exceeding 1000 lines is automatically saved under `~/.netmiko_mcp_server_outputs/<device>/` and can be read back with paging via the `list_device_outputs`/`read_device_output` tools. The threshold is configurable with `--output-save-threshold`, and the save location with `--output-dir`.
+
+Saved files are created with owner-only permissions (0600) and unique filenames. Saving, listing, and reading reject symlinks that resolve outside the output directory. For paging, `offset` must be non-negative and `limit` must be positive.
 
 #### Parallelism for group execution
 `send_command_to_group` defaults to 10 concurrent connections. Change this with `--max-workers`.

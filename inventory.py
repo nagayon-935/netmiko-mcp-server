@@ -161,14 +161,11 @@ def _load_toml() -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def load_config_toml() -> dict[str, Device]:
+def _parse_devices(data: dict[str, Any]) -> dict[str, Device]:
     devs: dict[str, Device] = {}
-
-    data = _load_toml()
-
-    default_args = {}
-    if "default" in data:
-        default_args = data["default"]
+    default_args = data.get("default", {})
+    if not isinstance(default_args, dict):
+        raise ValueError("'default' must be a table of device defaults")
 
     for name, v in data.items():
         if name in RESERVED_KEYS:
@@ -176,8 +173,7 @@ def load_config_toml() -> dict[str, Device]:
         if not isinstance(v, dict):
             raise ValueError(f"unexpected value in toml: {v}")
 
-        for default_k, default_v in default_args.items():
-            v.setdefault(default_k, default_v)
+        v = {**default_args, **v}
         v.setdefault("name", name)
 
         for field in _ENCRYPTABLE_FIELDS:
@@ -190,13 +186,54 @@ def load_config_toml() -> dict[str, Device]:
     return devs
 
 
-def load_groups() -> dict[str, list[str]]:
-    """Return the `[groups]` table mapping group name to a list of device names."""
-    data = _load_toml()
+def _parse_groups(data: dict[str, Any]) -> dict[str, list[str]]:
     groups = data.get("groups", {})
     if not isinstance(groups, dict):
         raise ValueError("'groups' must be a table of group_name = [device names]")
+    for name, members in groups.items():
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) for member in members
+        ):
+            raise ValueError(f"group '{name}' must be an array of device names")
     return groups
+
+
+@dataclass(frozen=True)
+class Inventory:
+    """Devices and groups parsed from one version of the inventory file."""
+
+    devices: dict[str, Device]
+    groups: dict[str, list[str]]
+
+    def get_device_names(self, device_or_group: str) -> list[str]:
+        if device_or_group == "all":
+            return list(self.devices)
+        if device_or_group in self.devices:
+            return [device_or_group]
+        if device_or_group in self.groups:
+            names = self.groups[device_or_group]
+            unknown = [name for name in names if name not in self.devices]
+            if unknown:
+                raise ValueError(
+                    f"group '{device_or_group}' references unknown device(s): {unknown}"
+                )
+            return list(dict.fromkeys(names))
+        raise ValueError(f"no device or group named '{device_or_group}'")
+
+
+def load_inventory() -> Inventory:
+    """Re-read the inventory once, keeping device and group resolution consistent."""
+    data = _load_toml()
+    return Inventory(devices=_parse_devices(data), groups=_parse_groups(data))
+
+
+def load_config_toml() -> dict[str, Device]:
+    return _parse_devices(_load_toml())
+
+
+def load_groups() -> dict[str, list[str]]:
+    """Return the `[groups]` table mapping group name to a list of device names."""
+    return _parse_groups(_load_toml())
 
 
 def get_device_names(device_or_group: str) -> list[str]:
@@ -205,21 +242,4 @@ def get_device_names(device_or_group: str) -> list[str]:
     Raises ValueError if device_or_group is none of the above, or if a group
     references a device name that is not defined in the inventory.
     """
-    devs = load_config_toml()
-
-    if device_or_group == "all":
-        return list(devs.keys())
-    if device_or_group in devs:
-        return [device_or_group]
-
-    groups = load_groups()
-    if device_or_group in groups:
-        names = groups[device_or_group]
-        unknown = [n for n in names if n not in devs]
-        if unknown:
-            raise ValueError(
-                f"group '{device_or_group}' references unknown device(s): {unknown}"
-            )
-        return names
-
-    raise ValueError(f"no device or group named '{device_or_group}'")
+    return load_inventory().get_device_names(device_or_group)

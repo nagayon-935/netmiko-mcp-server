@@ -1,11 +1,14 @@
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from netmiko import exceptions
 
 import output_store
+import inventory
 import server
-from inventory import Device
+from inventory import Device, Inventory
 from security import CommandPolicy
 
 
@@ -159,8 +162,11 @@ def test_send_command_to_group_runs_on_each_device(monkeypatch):
     server.command_policy = CommandPolicy(allowed_commands=("show version",))
     stub1 = _StubDevice("r1", output="out1")
     stub2 = _StubDevice("r2", output="out2")
-    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub1, "r2": stub2})
-    monkeypatch.setattr(server, "get_device_names", lambda group: ["r1", "r2"])
+    monkeypatch.setattr(
+        server,
+        "load_inventory",
+        lambda: Inventory({"r1": stub1, "r2": stub2}, {"mygroup": ["r1", "r2"]}),
+    )
 
     result = server.send_command_to_group("mygroup", "show version")
 
@@ -178,11 +184,7 @@ def test_send_command_to_group_denied_by_policy(monkeypatch):
 
 def test_send_command_to_group_unknown_group_returns_error(monkeypatch):
     server.command_policy = CommandPolicy(allowed_commands=("show version",))
-    monkeypatch.setattr(
-        server,
-        "get_device_names",
-        lambda g: (_ for _ in ()).throw(ValueError(f"no device or group named '{g}'")),
-    )
+    monkeypatch.setattr(server, "load_inventory", lambda: Inventory({}, {}))
 
     result = server.send_command_to_group("missing", "show version")
 
@@ -290,4 +292,113 @@ def test_set_config_stops_before_connecting_on_first_denied_command(monkeypatch)
 
     assert "Security Error" in result
     # Nothing should have been sent to the device since the batch failed validation.
+    assert stub.last_config_commands is None
+
+
+def test_group_execution_uses_one_inventory_version(monkeypatch):
+    server.command_policy = CommandPolicy(allowed_commands=("show version",))
+    reads = []
+
+    def load_data():
+        reads.append(True)
+        if len(reads) > 1:
+            return {}
+        return {
+            "r1": {"hostname": "192.0.2.1", "device_type": "cisco_ios"},
+            "groups": {"core": ["r1", "r1"]},
+        }
+
+    calls = []
+
+    def send_command(self, cmd, use_textfsm=False):
+        calls.append((self.hostname, cmd))
+        return "ok"
+
+    monkeypatch.setattr(inventory, "_load_toml", load_data)
+    monkeypatch.setattr(Device, "send_command", send_command)
+
+    assert server.send_command_to_group("core", "show version") == {"r1": "ok"}
+    assert len(reads) == 1
+    assert calls == [("192.0.2.1", "show version")]
+
+
+def test_empty_config_batch_is_denied_and_audited(tmp_path, monkeypatch):
+    server.enable_config = True
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+
+    result = server.set_config_commands_and_commit_or_save("r1", [])
+
+    assert "Security Error" in result
+    assert stub.last_config_commands is None
+    record = json.loads((tmp_path / "audit.log").read_text())
+    assert record["verdict"] == "DENIED"
+    assert record["reason"] == "EMPTY_CONFIG_COMMANDS"
+
+
+def test_group_execution_preserves_fail_closed_audit(monkeypatch):
+    server.command_policy = CommandPolicy(allowed_commands=("show version",))
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_inventory", lambda: Inventory({"r1": stub}, {}))
+
+    def fail_audit(**kwargs):
+        raise RuntimeError("Audit log write failed")
+
+    monkeypatch.setattr(server, "log_connection_outcome", fail_audit)
+    with pytest.raises(RuntimeError, match="Audit log write failed"):
+        server.send_command_to_group("r1", "show version")
+
+
+def test_list_device_outputs_reports_unsafe_path(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    base_dir = Path(output_store.output_dir)
+    base_dir.mkdir()
+    (base_dir / "r1").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(server, "get_device_names", lambda group: ["r1"])
+
+    result = json.loads(server.list_device_outputs("r1"))
+
+    assert result["error"].startswith("Security Error:")
+
+
+def test_main_rejects_malformed_policy_before_reading_inventory(tmp_path, monkeypatch):
+    import main
+
+    path = tmp_path / "commands.toml"
+    path.write_text('allowed_commands = "show version"\n')
+    monkeypatch.setattr(inventory, "tomlpath", None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", str(tmp_path / "missing.toml"), "--commands-file", str(path)],
+    )
+
+    with pytest.raises(SystemExit, match="Startup Error:.*allowed_commands"):
+        main.main()
+
+
+@pytest.mark.parametrize("tool", ["single", "group", "config"])
+def test_audit_attempt_failure_prevents_device_commands(monkeypatch, tool):
+    server.enable_config = True
+    server.command_policy = CommandPolicy(allowed_commands=("show version",))
+    server.config_command_policy = CommandPolicy(allowed_commands=("description *",))
+    stub = _StubDevice("r1")
+    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": stub})
+    monkeypatch.setattr(server, "load_inventory", lambda: Inventory({"r1": stub}, {}))
+
+    def fail_audit(**kwargs):
+        raise RuntimeError("Audit log write failed")
+
+    monkeypatch.setattr(server, "log_command_attempt", fail_audit)
+
+    with pytest.raises(RuntimeError, match="Audit log write failed"):
+        if tool == "single":
+            server.send_command_and_get_output("r1", "show version")
+        elif tool == "group":
+            server.send_command_to_group("r1", "show version")
+        else:
+            server.set_config_commands_and_commit_or_save("r1", ["description uplink"])
+
+    assert stub.last_command is None
     assert stub.last_config_commands is None

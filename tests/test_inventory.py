@@ -2,7 +2,13 @@ import pytest
 
 import inventory
 from credential_crypto import KEY_ENV_VAR, encrypt_value, generate_key
-from inventory import Device, get_device_names, load_config_toml, load_groups
+from inventory import (
+    Device,
+    get_device_names,
+    load_config_toml,
+    load_groups,
+    load_inventory,
+)
 
 
 def test_device_rejects_invalid_device_type():
@@ -216,3 +222,45 @@ def test_load_config_toml_raises_when_key_missing_for_encrypted_value(
 
     with pytest.raises(RuntimeError, match=KEY_ENV_VAR):
         load_config_toml()
+
+
+@pytest.mark.parametrize("members", ['"router1"', '["router1", 42]', "42"])
+def test_load_groups_rejects_non_string_arrays(tmp_path, monkeypatch, members):
+    path = tmp_path / "devices.toml"
+    path.write_text(f"[groups]\ncore = {members}\n")
+    monkeypatch.setattr(inventory, "tomlpath", str(path))
+
+    with pytest.raises(ValueError, match="array of device names"):
+        load_groups()
+
+
+def test_load_inventory_does_not_mutate_parsed_defaults(monkeypatch):
+    data = {
+        "default": {"device_type": "cisco_ios", "pre_commands": ["show clock"]},
+        "r1": {"hostname": "192.0.2.1"},
+    }
+    monkeypatch.setattr(inventory, "_load_toml", lambda: data)
+
+    snapshot = load_inventory()
+
+    assert snapshot.devices["r1"].device_type == "cisco_ios"
+    assert data["r1"] == {"hostname": "192.0.2.1"}
+
+
+def test_load_config_toml_rejects_non_table_defaults(tmp_path, monkeypatch):
+    path = tmp_path / "devices.toml"
+    path.write_text('default = "cisco_ios"\n')
+    monkeypatch.setattr(inventory, "tomlpath", str(path))
+
+    with pytest.raises(ValueError, match="'default' must be a table"):
+        load_config_toml()
+
+
+def test_group_members_are_deduplicated(tmp_path, monkeypatch):
+    path = _write_devices_with_groups(tmp_path)
+    path.write_text(
+        path.read_text().replace('["router1", "router2"]', '["router1", "router1"]')
+    )
+    monkeypatch.setattr(inventory, "tomlpath", str(path))
+
+    assert get_device_names("core") == ["router1"]
