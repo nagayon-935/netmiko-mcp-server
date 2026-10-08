@@ -16,7 +16,7 @@ from audit import (
     log_command_attempt,
     log_connection_outcome,
 )
-from inventory import Device, get_device_names, load_config_toml
+from inventory import Device, get_device_names, load_config_toml, load_inventory
 from security import CommandPolicy, validate_command, validate_config_command
 
 logger = logging.getLogger("netmiko-mcp-server")
@@ -198,11 +198,12 @@ def send_command_to_group(
         }
 
     try:
-        device_names = get_device_names(device_or_group)
+        inventory = load_inventory()
+        device_names = inventory.get_device_names(device_or_group)
     except ValueError as e:
         return {"error": f"Inventory Error: {e}"}
 
-    devs = load_config_toml()
+    devs = inventory.devices
     results: dict[str, Any] = {}
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -238,7 +239,11 @@ def list_device_outputs(device_or_group: str) -> str:
         device_names = get_device_names(device_or_group)
     except ValueError as e:
         return json.dumps({"error": f"Inventory Error: {e}"})
-    return json.dumps({name: output_store.list_outputs(name) for name in device_names})
+    try:
+        outputs = {name: output_store.list_outputs(name) for name in device_names}
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(outputs)
 
 
 @mcp.tool()
@@ -266,7 +271,7 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
     tool. Each command is validated against config_allowed_commands /
     config_denied_commands (from --commands-file) before anything is sent to
     the device; if any single command is denied, none of them are sent.
-    Certain state-changing commands (interface shutdown/no shutdown, clear)
+    Certain state-changing commands (interface shutdown, clear)
     are always denied regardless of configuration.
     """
     joined_commands = "; ".join(commands)
@@ -283,6 +288,16 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             "Error: configuration changes are disabled by default. "
             "Start the server with --enable-config to allow this tool."
         )
+
+    if not commands:
+        log_command_attempt(
+            tool="set_config_commands_and_commit_or_save",
+            device=name,
+            command=joined_commands,
+            verdict="DENIED",
+            reason="EMPTY_CONFIG_COMMANDS",
+        )
+        return "Security Error: at least one configuration command is required."
 
     normalized_commands: list[str] = []
     for cmd in commands:

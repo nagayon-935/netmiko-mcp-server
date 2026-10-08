@@ -7,6 +7,8 @@ discover and page through what was saved.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,46 +53,80 @@ def _sanitize_command_for_filename(command: str) -> str:
     return safe[:50]
 
 
+def _restricted_path(base_dir: Path, path: Path) -> Path:
+    """Resolve every storage path before reading, writing, or changing its mode."""
+    try:
+        resolved = path.resolve()
+        if resolved.is_relative_to(base_dir.resolve()):
+            return resolved
+    except (OSError, RuntimeError):
+        pass
+    raise ValueError("Security Error: path resolves outside restricted directory")
+
+
+def _device_directory(device_name: str) -> Path:
+    _validate_path_component(device_name, "device name")
+    base_dir = Path(output_dir).expanduser()
+    return _restricted_path(base_dir, base_dir / device_name)
+
+
 def save_output(device_name: str, command: str, output: Any) -> str:
     """Save output for device_name to a new file and return its filename."""
-    _validate_path_component(device_name, "device name")
+    device_dir = _device_directory(device_name)
 
     base_dir = Path(output_dir).expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
     base_dir.chmod(0o700)
 
-    device_dir = base_dir / device_name
     device_dir.mkdir(exist_ok=True)
     device_dir.chmod(0o700)
 
     cmd_part = _sanitize_command_for_filename(command)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-    file_path = device_dir / f"{cmd_part}_{timestamp}.txt"
-
     content = (
         json.dumps(output, indent=2)
         if isinstance(output, (list, dict))
         else str(output)
     )
-    file_path.write_text(content, encoding="utf-8")
-    file_path.chmod(0o600)
+    # mkstemp creates a unique file with mode 0600 from the first write, so
+    # concurrent results cannot overwrite each other or expose output briefly.
+    fd, filename = tempfile.mkstemp(
+        dir=device_dir, prefix=f"{cmd_part}_{timestamp}_", suffix=".txt"
+    )
+    file_path = Path(filename)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+    except BaseException:
+        file_path.unlink(missing_ok=True)
+        raise
     return file_path.name
 
 
 def list_outputs(device_name: str) -> list[str]:
     """List saved output filenames for device_name, newest first."""
-    _validate_path_component(device_name, "device name")
-
-    device_dir = Path(output_dir).expanduser() / device_name
+    device_dir = _device_directory(device_name)
     if not device_dir.is_dir():
         return []
-    return sorted((f.name for f in device_dir.glob("*.txt")), reverse=True)
+    base_dir = Path(output_dir).expanduser()
+    return sorted(
+        (
+            f.name
+            for f in device_dir.glob("*.txt")
+            if _restricted_path(base_dir, f).is_file()
+        ),
+        reverse=True,
+    )
 
 
 def read_output(
     device_name: str, filename: str, offset: int = 0, limit: int = 500
 ) -> str:
     """Return a paginated slice of a previously saved output file."""
+    if offset < 0:
+        return "Error: offset must be non-negative."
+    if limit <= 0:
+        return "Error: limit must be positive."
     try:
         _validate_path_component(device_name, "device name")
         _validate_path_component(filename, "filename")
@@ -98,23 +134,10 @@ def read_output(
         return str(e)
 
     base_dir = Path(output_dir).expanduser()
-    device_dir = base_dir / device_name
-    file_path = device_dir / filename
-
-    # Resolve and confirm the final path is still inside base_dir. This catches
-    # bypasses that survive the substring checks above, such as a symlink
-    # planted inside device_dir that points outside the output directory.
     try:
-        if not file_path.resolve().is_relative_to(base_dir.resolve()):
-            return (
-                f"Security Error: path resolves outside restricted directory "
-                f"(device: {device_name}, file: {filename})"
-            )
-    except OSError:
-        return (
-            f"Security Error: path resolves outside restricted directory "
-            f"(device: {device_name}, file: {filename})"
-        )
+        file_path = _restricted_path(base_dir, base_dir / device_name / filename)
+    except ValueError as exc:
+        return str(exc)
 
     if not file_path.is_file():
         return f"Error: file '{filename}' not found for device '{device_name}'."

@@ -87,6 +87,8 @@ denied_commands = [
 
 同じ`commands.toml`に`config_allowed_commands`/`config_denied_commands`を書くと、`set_config_commands_and_commit_or_save`に渡された各コマンド行にもallow/denyリストが適用されます（未指定なら全拒否）。渡されたコマンドの中に1つでも拒否されたものがあれば、デバイスには何も送信されません。
 
+4種類のコマンドリストには、空でない文字列の配列を指定してください。不正な形式の場合はサーバーの起動を中止します。空の設定コマンド一覧はデバイスに接続する前に拒否し、監査ログに記録します。
+
 ```toml
 config_allowed_commands = [
   "interface *",
@@ -112,6 +114,8 @@ core_switches = ["switch_ssh", "c1200coreSW"]
 ```
 
 グループ名の代わりに `all` を指定すると、インベントリ内の全デバイスが対象になります。
+
+グループのメンバーにはデバイス名の文字列配列を指定してください。同じデバイスが重複していても実行は1回です。グループへのコマンド実行ではデバイスとグループを一度に読み込み、実行中に異なる版のインベントリが混ざることを防ぎます。ファイルへの変更は次の呼び出しから反映されます。
 
 ### 4. 認証情報の暗号化 (任意)
 
@@ -176,6 +180,8 @@ uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.
 
 #### 出力サイズ対策
 デフォルトで1000行を超える出力は自動的に `~/.netmiko_mcp_server_outputs/<device>/` 配下に保存され、`list_device_outputs`/`read_device_output` ツールでページングしながら読み出せます。閾値は `--output-save-threshold`、保存先は `--output-dir` で変更できます。
+
+保存ファイルは作成時点から所有者のみ読み書き可能 (0600) とし、重複しないファイル名を使用します。保存・一覧取得・読み出しでは、出力ディレクトリ外を指すシンボリックリンクを拒否します。ページング時の `offset` は0以上、`limit` は1以上を指定してください。
 
 #### グループ実行の並列数
 `send_command_to_group` の同時接続数はデフォルト10です。`--max-workers` で変更できます。
