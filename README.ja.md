@@ -56,6 +56,7 @@ ansi_escape_codes = true
 ```bash
 uv run python import_inventory.py                  # 既定: network_devices.toml
 uv run python import_inventory.py -f my_devices.toml
+uv run python import_inventory.py --metadata        # 検索用の公開メタデータも入力
 ```
 
 - デバイス名・ホスト名(IPv4/IPv6/FQDN)・device_type(netmiko のプラットフォーム名)などを1項目ずつ検証しながら入力します。device_type を間違えると部分一致の候補が表示されます。デバイス名の入力時に `q` で入力を終了し、確認のうえ保存します
@@ -105,6 +106,21 @@ config_denied_commands = [
 さらに、`shutdown`（インターフェースを止める）と`clear*`は、上記の設定に関わらず**常に拒否**されます（コード側にハードコードされたベースライン保護。`security.py`の`BASELINE_CONFIG_DENIED_COMMANDS`）。`config_allowed_commands`に明示的に書いても上書きできません。`no shutdown`（インターフェースを起こす方向）は危険側の操作ではないためベースライン拒否には含まれていません。
 
 ### 3. デバイスグループ (任意)
+
+デバイステーブルには検索用の公開メタデータを任意で追加できます。
+
+```toml
+[tokyo_core]
+hostname = "192.0.2.20"
+device_type = "cisco_ios"
+site = "Tokyo"
+role = "core-switch"
+environment = "production"
+description = "東京拠点のコアスイッチ"
+tags = ["bgp", "critical"]
+```
+
+メタデータはMCPクライアントへ公開するため、認証情報などの秘密情報は含めないでください。Netmikoには渡しません。`get_network_device_list` はメタデータと所属グループを含めて返し、`get_network_group_list` はグループと重複を除いた機器名を返します。`find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` は接続・実行せずに候補を検索します。自由文は大文字小文字を区別しない部分一致、その他の条件は大文字小文字を区別しない完全一致で、すべての条件を満たす機器を返します。`limit` は1〜100です。結果には `matches`、`total`、`truncated`、`requires_selection`、`executed=false` を含みます。候補の曖昧さは件数制限前に判定するため、選択肢を提示してから正確な登録名で実行してください。`all` は予約名です。グループと機器の同名は一覧・検索時に拒否し、デバイスの `name` でTOMLテーブル名を上書きすることもできません。
 
 `network_devices.toml` に `[groups]` テーブルを追加すると、`send_command_to_group` でまとめて並列実行できます。
 
@@ -229,6 +245,8 @@ docker run -d -p 10000:10000 \
 | ツール | 説明 |
 |---|---|
 | `get_network_device_list` | インベントリ内の全デバイス一覧を返す（認証情報は含まない） |
+| `get_network_group_list` | グループと正確なメンバーの登録名を取得 |
+| `find_network_devices` | 公開メタデータから候補を検索（機器への実行なし） |
 | `send_command_and_get_output` | 単一デバイスにコマンドを送信。`use_textfsm`、`save_output` オプション付き |
 | `send_command_to_group` | デバイス名/グループ名/`all` に対してコマンドを並列実行。`use_textfsm`、`save_output` オプション付き |
 | `list_device_outputs` | 保存済み出力ファイルの一覧を取得 |

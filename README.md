@@ -56,6 +56,7 @@ Instead of editing the TOML by hand, you can build or append to the inventory wi
 ```bash
 uv run python import_inventory.py                  # default: network_devices.toml
 uv run python import_inventory.py -f my_devices.toml
+uv run python import_inventory.py --metadata        # also prompt for public search metadata
 ```
 
 - Prompts for each field (device name, hostname/IP with IPv4/IPv6/FQDN support, device_type from netmiko's platform list, etc.) with validation and re-prompting on invalid input. A wrong `device_type` shows partial-match suggestions. Enter `q` at the device-name prompt to finish and move to the save/confirm step.
@@ -105,6 +106,21 @@ config_denied_commands = [
 In addition, `shutdown` (bringing an interface down) and `clear*` are **always denied** regardless of the above configuration (a hardcoded baseline protection — see `BASELINE_CONFIG_DENIED_COMMANDS` in `security.py`). Listing them in `config_allowed_commands` cannot override this. `no shutdown` (bringing an interface back up) is not on the dangerous side of the operation, so it is not included in the baseline deny list.
 
 ### 3. Device groups (optional)
+
+Device tables can include optional public search metadata:
+
+```toml
+[tokyo_core]
+hostname = "192.0.2.20"
+device_type = "cisco_ios"
+site = "Tokyo"
+role = "core-switch"
+environment = "production"
+description = "Tokyo core switch"
+tags = ["bgp", "critical"]
+```
+
+Metadata is exposed to MCP clients and must not contain passwords or other secrets. It is not sent to Netmiko. `get_network_device_list` includes metadata and group memberships; `get_network_group_list` lists groups and deduplicated member names. `find_network_devices(query="", site=None, role=None, environment=None, group=None, tag=None, limit=20)` returns candidates without connecting or executing. Free text uses case-insensitive substrings; other filters use case-insensitive exact matching and combine with AND. `limit` is 1-100. The response includes `matches`, `total`, `truncated`, `requires_selection`, and `executed=false`. Ambiguity is calculated before truncation: present choices and use an exact registered name for execution. `all` is reserved, group/device name collisions are rejected during discovery, and a device's `name` cannot override its TOML table name.
 
 Add a `[groups]` table to `network_devices.toml` to run commands in parallel across a set of devices with `send_command_to_group`.
 
@@ -229,6 +245,8 @@ docker run -d -p 10000:10000 \
 | Tool | Description |
 |---|---|
 | `get_network_device_list` | Returns the list of all devices in the inventory (no credentials included) |
+| `get_network_group_list` | Lists groups and exact registered member names |
+| `find_network_devices` | Searches public metadata and returns candidates without executing |
 | `send_command_and_get_output` | Sends a command to a single device, with `use_textfsm` and `save_output` options |
 | `send_command_to_group` | Runs a command in parallel across a device name, group name, or `all`, with `use_textfsm` and `save_output` options |
 | `list_device_outputs` | Lists saved output files |

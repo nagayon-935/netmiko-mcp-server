@@ -29,6 +29,39 @@ from inventory_builder import EnteredDevice, validate_hostname
 CTRL_C = "<CTRL-C>"
 
 
+def test_metadata_cli_round_trip(tmp_path, monkeypatch):
+    monkeypatch.delenv(KEY_ENV_VAR, raising=False)
+    path = tmp_path / "devices.toml"
+    inputs = [
+        "1",
+        "r1",
+        "192.0.2.1",
+        "admin",
+        "1",
+        "cisco_ios",
+        "",
+        "core",
+        "Tokyo",
+        "core-switch",
+        "production",
+        "東京のコア",
+        "bgp,,critical",
+        "bgp,critical,bgp",
+        "q",
+        "y",
+    ]
+    p, said = make_prompter(inputs, ["pw", "pw", ""])
+    assert main(["-f", str(path), "--metadata"], p) == 0
+    data = tomllib.loads(path.read_text())
+    assert data["r1"]["site"] == "Tokyo"
+    assert data["r1"]["role"] == "core-switch"
+    assert data["r1"]["environment"] == "production"
+    assert data["r1"]["description"] == "東京のコア"
+    assert data["r1"]["tags"] == ["bgp", "critical"]
+    assert any("空のタグ" in line for line in said)
+    assert any("読み戻し検証 OK" in line for line in said)
+
+
 def make_prompter(
     inputs: list[str], secrets: list[str] | None = None
 ) -> tuple[Prompter, list[str]]:
