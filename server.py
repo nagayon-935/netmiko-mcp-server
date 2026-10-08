@@ -31,6 +31,9 @@ logger = logging.getLogger("netmiko-mcp-server")
 # exception.
 CONNECTION_ERRORS = (exceptions.NetmikoBaseException, SSHException, OSError)
 
+# Errors raised while reading or validating the inventory file.
+INVENTORY_ERRORS = (OSError, ValueError, TypeError, RuntimeError)
+
 # Set by main() at startup from CLI arguments.
 enable_config: bool = False
 command_policy: CommandPolicy = CommandPolicy()
@@ -46,6 +49,32 @@ def _inventory_failure() -> ToolFailure:
         "Inventory Error: device inventory or credentials could not be loaded.",
         code="INVENTORY_UNAVAILABLE",
         next_action="Check the inventory file, device types, group references, and inventory encryption key on the server.",
+    )
+
+
+def _command_denied_failure(kind: str, reason: str, next_action: str) -> ToolFailure:
+    return ToolFailure(
+        f"Security Error: {kind} is not permitted ({reason}).",
+        code=reason,
+        next_action=next_action,
+    )
+
+
+def _show_command_denied(reason: str) -> ToolFailure:
+    return _command_denied_failure(
+        "command",
+        reason,
+        "Ask the server operator to review the command policy; do not bypass the deny rules.",
+    )
+
+
+def _device_not_found(name: str, context: str) -> ToolFailure:
+    message = f"Error: no device named '{name}'"
+    logger.warning("%s: %s", context, message)
+    return ToolFailure(
+        message,
+        code="DEVICE_NOT_FOUND",
+        next_action="Use get_network_device_list and select an exact registered device name.",
     )
 
 
@@ -87,12 +116,10 @@ def get_network_device_list() -> str:
     """
     logger.info("device list requested")
     try:
-        devs = load_config_toml()
-    except (OSError, ValueError, TypeError, RuntimeError):
+        snapshot = load_inventory()
+        return json.dumps(snapshot.describe_devices())
+    except INVENTORY_ERRORS:
         return _inventory_failure()
-    return json.dumps([dev.json() for dev in devs.values()])
-    snapshot = load_inventory()
-    return json.dumps(snapshot.describe_devices())
 
 
 @mcp.tool()
@@ -240,24 +267,14 @@ def send_command_and_get_output(
     )
     if not result.allowed:
         logger.warning("blocked command for %s: %s (%s)", name, command, result.reason)
-        return ToolFailure(
-            f"Security Error: command is not permitted ({result.reason}).",
-            code=result.reason,
-            next_action="Ask the server operator to review the command policy; do not bypass the deny rules.",
-        )
+        return _show_command_denied(result.reason)
 
     try:
         devs = load_config_toml()
-    except (OSError, ValueError, TypeError, RuntimeError):
+    except INVENTORY_ERRORS:
         return _inventory_failure()
     if name not in devs:
-        ret = f"Error: no device named '{name}'"
-        logger.warning("get_output: %s", ret)
-        return ToolFailure(
-            ret,
-            code="DEVICE_NOT_FOUND",
-            next_action="Use get_network_device_list and select an exact registered device name.",
-        )
+        return _device_not_found(name, "get_output")
 
     return _execute_show_command(
         tool="send_command_and_get_output",
@@ -300,17 +317,11 @@ def send_command_to_group(
         reason=result.reason,
     )
     if not result.allowed:
-        return {
-            "error": ToolFailure(
-                f"Security Error: command is not permitted ({result.reason}).",
-                code=result.reason,
-                next_action="Ask the server operator to review the command policy; do not bypass the deny rules.",
-            )
-        }
+        return {"error": _show_command_denied(result.reason)}
 
     try:
         inventory = load_inventory()
-    except (OSError, ValueError, TypeError, RuntimeError):
+    except INVENTORY_ERRORS:
         return {"error": _inventory_failure()}
     try:
         device_names = inventory.get_device_names(device_or_group)
@@ -357,7 +368,7 @@ def list_device_outputs(device_or_group: str) -> str:
     """
     try:
         device_names = get_device_names(device_or_group)
-    except (OSError, ValueError, TypeError, RuntimeError):
+    except INVENTORY_ERRORS:
         return _inventory_failure()
     try:
         outputs = {name: output_store.list_outputs(name) for name in device_names}
@@ -448,25 +459,19 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             logger.warning(
                 "blocked config command for %s: %s (%s)", name, cmd, result.reason
             )
-            return ToolFailure(
-                f"Security Error: config command is not permitted ({result.reason}).",
-                code=result.reason,
-                next_action="Review the complete batch with the server operator; no commands were sent.",
+            return _command_denied_failure(
+                "config command",
+                result.reason,
+                "Review the complete batch with the server operator; no commands were sent.",
             )
         normalized_commands.append(result.normalized_command)
 
     try:
         devs = load_config_toml()
-    except (OSError, ValueError, TypeError, RuntimeError):
+    except INVENTORY_ERRORS:
         return _inventory_failure()
     if name not in devs:
-        ret = f"Error: no device named '{name}'"
-        logger.warning("set_config: %s", ret)
-        return ToolFailure(
-            ret,
-            code="DEVICE_NOT_FOUND",
-            next_action="Use get_network_device_list and select an exact registered device name.",
-        )
+        return _device_not_found(name, "set_config")
 
     try:
         ret = devs[name].send_config_set_and_commit_and_save(normalized_commands)

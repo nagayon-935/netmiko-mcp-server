@@ -28,9 +28,8 @@ logging.basicConfig(level=logging.INFO)
 BEARER_TOKEN_ENV_VAR = "NETMIKO_MCP_SERVER_BEARER_TOKEN"
 
 
-def main() -> None:
-    desc = "netmiko-mcp-server"
-    parser = argparse.ArgumentParser(description=desc)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="netmiko-mcp-server")
     parser.add_argument(
         "--doctor",
         action="store_true",
@@ -131,7 +130,78 @@ def main() -> None:
     parser.add_argument(
         "tomlpath", nargs="?", default=None, help="path to config toml file"
     )
+    return parser
 
+
+def _apply_runtime_config(args: argparse.Namespace) -> None:
+    """Inject CLI settings into the module globals the tools read at call time."""
+    inventory.tomlpath = args.tomlpath
+    server.enable_config = args.enable_config
+    server.output_save_threshold = args.output_save_threshold
+    server.max_workers = args.max_workers
+    output_store.output_dir = args.output_dir
+
+    try:
+        server.command_policy, server.config_command_policy = load_command_policies(
+            args.commands_file
+        )
+    except ValueError as exc:
+        raise SystemExit(f"Startup Error: {exc}") from exc
+    policy_errors = validate_command_lists(
+        server.command_policy
+    ) + validate_command_lists(server.config_command_policy)
+    if policy_errors:
+        raise SystemExit("Startup Error: " + " ".join(policy_errors))
+    if args.commands_file is None:
+        logger.warning(
+            "no --commands-file specified: ALL commands will be denied by default"
+        )
+
+    configure_audit_logger(args.audit_log_file)
+
+
+def _build_sse_app(args: argparse.Namespace) -> Any:
+    """Build the SSE ASGI app with subnet restriction and Bearer authentication."""
+    allowed_subnets = [
+        ipaddress.ip_network(item.strip(), strict=False)
+        for item in args.allowed_subnet.split(",")
+        if item.strip()
+    ]
+    bind_ip = ipaddress.ip_address(args.bind)
+    if not any(bind_ip in net for net in allowed_subnets):
+        raise SystemExit(
+            f"--bind {args.bind} is not inside --allowed-subnet {args.allowed_subnet}"
+        )
+
+    sse_app = server.mcp.sse_app()
+
+    @sse_app.middleware("http")
+    async def restrict_subnet(request, call_next):
+        client_host = request.client.host if request.client else ""
+        try:
+            client_ip = ipaddress.ip_address(client_host)
+        except ValueError:
+            return PlainTextResponse("Forbidden", status_code=403)
+        if not any(client_ip in net for net in allowed_subnets):
+            return PlainTextResponse("Forbidden", status_code=403)
+        return await call_next(request)
+
+    app: Any = Starlette(debug=args.debug, routes=[Mount("/", app=sse_app)])
+
+    if not args.no_http_auth:
+        token = os.environ.get(BEARER_TOKEN_ENV_VAR, "").strip()
+        if not token:
+            raise SystemExit(
+                f"Startup Error: {BEARER_TOKEN_ENV_VAR} must be set in the "
+                "environment when running --sse. Use --no-http-auth to run "
+                "without authentication (not recommended)."
+            )
+        app = BearerTokenMiddleware(app, token)
+    return app
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.doctor_json and not args.doctor:
@@ -175,68 +245,12 @@ def main() -> None:
         print(json.dumps(report) if args.doctor_json else format_diagnostics(report))
         raise SystemExit(0 if report["ok"] else 1)
 
-    inventory.tomlpath = args.tomlpath
-    server.enable_config = args.enable_config
-    server.output_save_threshold = args.output_save_threshold
-    server.max_workers = args.max_workers
-    output_store.output_dir = args.output_dir
-
-    try:
-        server.command_policy, server.config_command_policy = load_command_policies(
-            args.commands_file
-        )
-    except ValueError as exc:
-        raise SystemExit(f"Startup Error: {exc}") from exc
-    policy_errors = validate_command_lists(
-        server.command_policy
-    ) + validate_command_lists(server.config_command_policy)
-    if policy_errors:
-        raise SystemExit("Startup Error: " + " ".join(policy_errors))
-    if args.commands_file is None:
-        logger.warning(
-            "no --commands-file specified: ALL commands will be denied by default"
-        )
-
-    configure_audit_logger(args.audit_log_file)
+    _apply_runtime_config(args)
 
     inventory.load_config_toml()
 
     if args.sse:
-        allowed_subnets = [
-            ipaddress.ip_network(item.strip(), strict=False)
-            for item in args.allowed_subnet.split(",")
-            if item.strip()
-        ]
-        bind_ip = ipaddress.ip_address(args.bind)
-        if not any(bind_ip in net for net in allowed_subnets):
-            raise SystemExit(
-                f"--bind {args.bind} is not inside --allowed-subnet {args.allowed_subnet}"
-            )
-
-        sse_app = server.mcp.sse_app()
-
-        @sse_app.middleware("http")
-        async def restrict_subnet(request, call_next):
-            client_host = request.client.host if request.client else ""
-            try:
-                client_ip = ipaddress.ip_address(client_host)
-            except ValueError:
-                return PlainTextResponse("Forbidden", status_code=403)
-            if not any(client_ip in net for net in allowed_subnets):
-                return PlainTextResponse("Forbidden", status_code=403)
-            return await call_next(request)
-
-        app: Any = Starlette(debug=args.debug, routes=[Mount("/", app=sse_app)])
-
-        if not args.no_http_auth:
-            token = os.environ.get(BEARER_TOKEN_ENV_VAR, "").strip()
-            if not token:
-                raise SystemExit(
-                    f"Startup Error: {BEARER_TOKEN_ENV_VAR} must be set in the "
-                    "environment when running --sse. Use --no-http-auth to run "
-                    "without authentication (not recommended)."
-                )
-            app = BearerTokenMiddleware(app, token)
+        app = _build_sse_app(args)
 
         import uvicorn
 
