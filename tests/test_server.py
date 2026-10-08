@@ -259,7 +259,7 @@ def test_set_config_denies_shutdown_even_if_explicitly_allowed(monkeypatch):
     result = server.set_config_commands_and_commit_or_save("r1", ["shutdown"])
 
     assert "Security Error" in result
-    assert "shutdown" in result
+    assert "DENY_MATCH" in result
     assert stub.last_config_commands is None
 
 
@@ -363,9 +363,9 @@ def test_list_device_outputs_reports_unsafe_path(tmp_path, monkeypatch):
     (base_dir / "r1").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr(server, "get_device_names", lambda group: ["r1"])
 
-    result = json.loads(server.list_device_outputs("r1"))
+    result = server.list_device_outputs("r1")
 
-    assert result["error"].startswith("Security Error:")
+    assert result.startswith("Security Error:")
 
 
 def test_main_rejects_malformed_policy_before_reading_inventory(tmp_path, monkeypatch):

@@ -24,6 +24,15 @@ OUTCOME_CONNECTION_ERROR = "CONNECTION_ERROR"
 _audit_logger = logging.getLogger("netmiko-mcp-server.audit")
 _audit_logger.addHandler(logging.NullHandler())
 
+
+class AuditWriteError(RuntimeError):
+    """Audit logging failed; device execution must not continue."""
+
+    def __init__(self, execution_state: str) -> None:
+        super().__init__("Audit log write failed")
+        self.execution_state = execution_state
+
+
 _LOGRECORD_BUILTIN_ATTRS = frozenset(
     {
         "args",
@@ -76,7 +85,12 @@ class _FailClosedFileHandler(logging.FileHandler):
 
     def handleError(self, record: logging.LogRecord) -> None:
         _, exc_value, _ = sys.exc_info()
-        raise RuntimeError(f"Audit log write failed: {exc_value}") from exc_value
+        state = (
+            "unknown"
+            if getattr(record, "event", "") == "connection_outcome"
+            else "not_started"
+        )
+        raise AuditWriteError(state) from exc_value
 
 
 def configure_audit_logger(log_file: str) -> None:

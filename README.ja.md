@@ -250,6 +250,10 @@ docker run -d -p 10000:10000 \
 
 ## MCP ツール一覧
 
+MCP呼び出しは `structuredContent` とテキストの両方へ同じJSONを返します。成功は `{"ok": true, "data": ...}`、失敗は `{"ok": false, "error": {"code": ..., "message": ..., "next_action": ..., "retryable": false, "execution_state": ...}}` とし、MCPの `isError=true` も設定します。MCPレスポンスの形式が変わるため、クライアントは生の出力ではなく `data` を参照してください。Python関数を直接呼ぶ場合の文字列・解析済み出力の形式は維持します。
+
+ポリシー拒否、インベントリ・機器の不在、認証失敗、タイムアウト、出力保存、監査ログ書き込みを区別し、接続例外の生の詳細は返しません。設定変更に失敗した場合は `execution_state="unknown"`、`retryable=false` とし、再実行前の機器状態確認を案内します。出力保存の失敗はコマンド実行済みのため `execution_state="completed"` とします。グループ実行は機器ごとの結果を `data` に格納し、総数・成功数・失敗数を `summary` に返します。一部失敗でも成功結果は保持し、全体の `ok` はfalseになります。自動再試行は行いません。
+
 | ツール | 説明 |
 |---|---|
 | `get_network_device_list` | インベントリ内の全デバイス一覧を返す（認証情報は含まない） |
