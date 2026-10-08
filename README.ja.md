@@ -141,6 +141,14 @@ password = "enc:gAAAAA..."
 
 ### 5. サーバー起動
 
+起動前に設定を診断できます。
+
+```bash
+uv run --frozen python main.py network_devices.toml --commands-file commands.toml --doctor
+```
+
+`--doctor` はインベントリとグループ参照、暗号化情報の復号、SSH鍵のパス、コマンドポリシー、保存先へのアクセス、数値オプションを確認します。`--sse` 指定時はbind・サブネット・ポート設定とBearerトークンの有無も確認します。機器への接続、ポートの待ち受け、MCPの起動、ファイル書き込みは行いません。実際の起動と同じオプション・環境変数で実行してください。`--doctor-json` を追加すると判定と対応方法をJSONで取得できます。エラーがあれば終了コード1、それ以外は0です。全拒否などの警告も表示します。オフライン診断の成功は接続性や、その後のファイル書き込みを保証するものではありません。
+
 #### stdio (ローカル)
 ```bash
 uv run --with "mcp[cli]" --with netmiko --with uvicorn main.py /path/to/devices.toml \
