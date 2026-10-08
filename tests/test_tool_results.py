@@ -169,14 +169,14 @@ def test_inventory_errors_are_structured_without_secret_details(device, monkeypa
     def fail():
         raise ValueError("DO_NOT_EXPOSE")
 
-    monkeypatch.setattr(server, "load_config_toml", fail)
+    monkeypatch.setattr(server, "load_inventory", fail)
     payload = call("get_network_device_list")
     assert payload["error"]["code"] == "INVENTORY_UNAVAILABLE"
     assert "DO_NOT_EXPOSE" not in json.dumps(payload)
 
 
 def test_lists_are_returned_as_structured_data(device, monkeypatch):
-    assert call("get_network_device_list")["data"] == [device.json()]
+    assert call("get_network_device_list")["data"] == [{**device.json(), "groups": []}]
     monkeypatch.setattr(server, "get_device_names", lambda target: ["r1"])
     assert call("list_device_outputs", device_or_group="r1")["data"] == {"r1": []}
 
