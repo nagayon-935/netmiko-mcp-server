@@ -46,8 +46,53 @@ def get_network_device_list() -> str:
     List all network devices that are controllable through this netmiko MCP server.
     """
     logger.info("device list requested")
-    devs = load_config_toml()
-    return json.dumps([dev.json() for dev in devs.values()])
+    snapshot = load_inventory()
+    return json.dumps(snapshot.describe_devices())
+
+
+@mcp.tool()
+def get_network_group_list() -> dict[str, list[str]]:
+    """List groups and their exact registered device names without connecting.
+
+    Use these exact names with execution tools. The special target 'all'
+    selects every device and is not a registered group.
+    """
+    snapshot = load_inventory()
+    snapshot.describe_devices()
+    return {group: snapshot.get_device_names(group) for group in snapshot.groups}
+
+
+@mcp.tool()
+def find_network_devices(
+    query: str = "",
+    site: str | None = None,
+    role: str | None = None,
+    environment: str | None = None,
+    group: str | None = None,
+    tag: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Search device candidates by public inventory metadata without executing.
+
+    query is a case-insensitive substring across public fields and group/tag
+    names. Other filters are case-insensitive exact matches and combine with
+    AND. limit must be 1-100. If requires_selection is true, present choices
+    to the user; never automatically execute on a fuzzy or ambiguous name.
+    Use the exact registered name from a selected match for execution.
+    """
+    if not 1 <= limit <= 100:
+        return {"error": "Error: limit must be between 1 and 100."}
+    snapshot = load_inventory()
+    matches = snapshot.find_devices(
+        query, site=site, role=role, environment=environment, group=group, tag=tag
+    )
+    return {
+        "matches": matches[:limit],
+        "total": len(matches),
+        "truncated": len(matches) > limit,
+        "requires_selection": len(matches) > 1,
+        "executed": False,
+    }
 
 
 def _maybe_save_output(
