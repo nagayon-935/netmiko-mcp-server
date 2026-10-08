@@ -4,7 +4,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# 依存関係のインストール
+# Install dependencies
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-cache
 
@@ -13,16 +13,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# ビルドステージから仮想環境をコピー
+# Copy the virtualenv from the build stage
 COPY --from=builder /app/.venv /app/.venv
 
-# ソースコードをコピー
-COPY main.py inventory.py server.py security.py audit.py http_auth.py output_store.py credential_crypto.py tool_results.py .
+# Copy runtime modules (import_inventory.py / inventory_builder.py are
+# interactive CLIs and intentionally excluded)
+COPY main.py inventory.py server.py security.py audit.py http_auth.py output_store.py credential_crypto.py tool_results.py diagnostics.py .
 
-# パスと環境変数の設定
+# Paths and environment
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
-# 実行コマンド
-# コンテナ内の /app/config.toml を読み込むように固定
+# Entrypoint: always read the inventory mounted at /app/config.toml
 ENTRYPOINT ["python", "main.py", "/app/config.toml"]
