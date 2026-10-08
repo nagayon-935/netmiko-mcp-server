@@ -7,7 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from netmiko import exceptions
-from paramiko.ssh_exception import SSHException
+from paramiko.ssh_exception import AuthenticationException, SSHException
 
 import output_store
 from audit import (
@@ -18,6 +18,7 @@ from audit import (
 )
 from inventory import Device, get_device_names, load_config_toml, load_inventory
 from security import CommandPolicy, validate_command, validate_config_command
+from tool_results import ToolFailure, structured_tool
 
 logger = logging.getLogger("netmiko-mcp-server")
 
@@ -28,7 +29,7 @@ logger = logging.getLogger("netmiko-mcp-server")
 # both hierarchies together so device-unreachable and bad-credential errors
 # surface as a clean "Connection Error" response instead of an unhandled
 # exception.
-CONNECTION_ERRORS = (exceptions.NetmikoBaseException, SSHException)
+CONNECTION_ERRORS = (exceptions.NetmikoBaseException, SSHException, OSError)
 
 # Set by main() at startup from CLI arguments.
 enable_config: bool = False
@@ -40,13 +41,55 @@ max_workers: int = 10
 mcp = FastMCP("netmiko server", dependencies=["netmiko"])
 
 
-@mcp.tool()
+def _inventory_failure() -> ToolFailure:
+    return ToolFailure(
+        "Inventory Error: device inventory or credentials could not be loaded.",
+        code="INVENTORY_UNAVAILABLE",
+        next_action="Check the inventory file, device types, group references, and inventory encryption key on the server.",
+    )
+
+
+def _connection_failure(exc: Exception, *, configuration: bool = False) -> ToolFailure:
+    if isinstance(exc, AuthenticationException):
+        code = "AUTHENTICATION_FAILED"
+        action = (
+            "Check the device account, password or SSH key, and enable credentials."
+        )
+        retryable = False
+    elif isinstance(
+        exc, (exceptions.NetmikoTimeoutException, exceptions.ReadTimeout, TimeoutError)
+    ):
+        code = "CONNECTION_TIMEOUT"
+        action = (
+            "Check device reachability and server connection/read timeout settings."
+        )
+        retryable = True
+    else:
+        code = "CONNECTION_FAILED"
+        action = "Check device reachability, SSH/Telnet settings, and key-file access."
+        retryable = True
+    if configuration:
+        action += " Inspect the device configuration before retrying; some commands may already have been applied."
+        retryable = False
+    return ToolFailure(
+        "Connection Error: " + code.lower().replace("_", " "),
+        code=code,
+        next_action=action,
+        retryable=retryable,
+        execution_state="unknown" if configuration else "not_completed",
+    )
+
+
+@structured_tool(mcp)
 def get_network_device_list() -> str:
     """
     List all network devices that are controllable through this netmiko MCP server.
     """
     logger.info("device list requested")
-    devs = load_config_toml()
+    try:
+        devs = load_config_toml()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return _inventory_failure()
     return json.dumps([dev.json() for dev in devs.values()])
 
 
@@ -106,14 +149,22 @@ def _execute_show_command(
             device=device_name,
             command=original_command,
             outcome=OUTCOME_CONNECTION_ERROR,
-            detail=str(exc),
+            detail=type(exc).__name__,
         )
-        return f"Connection Error: {exc}"
+        return _connection_failure(exc)
 
-    return _maybe_save_output(device_name, original_command, output, save_output)
+    try:
+        return _maybe_save_output(device_name, original_command, output, save_output)
+    except (OSError, ValueError):
+        return ToolFailure(
+            "Error: device command completed but its output could not be saved.",
+            code="OUTPUT_SAVE_FAILED",
+            next_action="Check the output directory permissions and safe device paths. The command has already completed.",
+            execution_state="completed",
+        )
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def send_command_and_get_output(
     name: str, command: str, use_textfsm: bool = False, save_output: bool = False
 ) -> Any:
@@ -142,15 +193,24 @@ def send_command_and_get_output(
     )
     if not result.allowed:
         logger.warning("blocked command for %s: %s (%s)", name, command, result.reason)
-        return (
-            f"Security Error: command '{command}' is not permitted ({result.reason})."
+        return ToolFailure(
+            f"Security Error: command is not permitted ({result.reason}).",
+            code=result.reason,
+            next_action="Ask the server operator to review the command policy; do not bypass the deny rules.",
         )
 
-    devs = load_config_toml()
+    try:
+        devs = load_config_toml()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return _inventory_failure()
     if name not in devs:
         ret = f"Error: no device named '{name}'"
         logger.warning("get_output: %s", ret)
-        return ret
+        return ToolFailure(
+            ret,
+            code="DEVICE_NOT_FOUND",
+            next_action="Use get_network_device_list and select an exact registered device name.",
+        )
 
     return _execute_show_command(
         tool="send_command_and_get_output",
@@ -163,7 +223,7 @@ def send_command_and_get_output(
     )
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def send_command_to_group(
     device_or_group: str,
     command: str,
@@ -194,14 +254,27 @@ def send_command_to_group(
     )
     if not result.allowed:
         return {
-            "error": f"Security Error: command '{command}' is not permitted ({result.reason})."
+            "error": ToolFailure(
+                f"Security Error: command is not permitted ({result.reason}).",
+                code=result.reason,
+                next_action="Ask the server operator to review the command policy; do not bypass the deny rules.",
+            )
         }
 
     try:
         inventory = load_inventory()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return {"error": _inventory_failure()}
+    try:
         device_names = inventory.get_device_names(device_or_group)
     except ValueError as e:
-        return {"error": f"Inventory Error: {e}"}
+        return {
+            "error": ToolFailure(
+                f"Inventory Error: {e}",
+                code="TARGET_NOT_FOUND",
+                next_action="Select an exact registered device or group, and check its members.",
+            )
+        }
 
     devs = inventory.devices
     results: dict[str, Any] = {}
@@ -227,7 +300,7 @@ def send_command_to_group(
     return results
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def list_device_outputs(device_or_group: str) -> str:
     """
     List saved output files for a device, group, or 'all'.
@@ -237,16 +310,26 @@ def list_device_outputs(device_or_group: str) -> str:
     """
     try:
         device_names = get_device_names(device_or_group)
-    except ValueError as e:
-        return json.dumps({"error": f"Inventory Error: {e}"})
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return _inventory_failure()
     try:
         outputs = {name: output_store.list_outputs(name) for name in device_names}
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        return ToolFailure(
+            str(e),
+            code="UNSAFE_OUTPUT_PATH",
+            next_action="Use a safe device directory inside the configured output directory.",
+        )
+    except OSError:
+        return ToolFailure(
+            "Error: saved outputs cannot be listed.",
+            code="OUTPUT_READ_FAILED",
+            next_action="Check output directory permissions.",
+        )
     return json.dumps(outputs)
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def read_device_output(
     device_name: str, filename: str, offset: int = 0, limit: int = 500
 ) -> str:
@@ -262,7 +345,7 @@ def read_device_output(
     return output_store.read_output(device_name, filename, offset, limit)
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> str:
     """
     Send configuration commands to a network device specified by the name.
@@ -284,9 +367,10 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             verdict="DENIED",
             reason="CONFIG_MODE_DISABLED",
         )
-        return (
-            "Error: configuration changes are disabled by default. "
-            "Start the server with --enable-config to allow this tool."
+        return ToolFailure(
+            "Error: configuration changes are disabled by default. Start the server with --enable-config to allow this tool.",
+            code="CONFIG_MODE_DISABLED",
+            next_action="Ask the server operator whether configuration changes should be enabled.",
         )
 
     if not commands:
@@ -297,7 +381,11 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             verdict="DENIED",
             reason="EMPTY_CONFIG_COMMANDS",
         )
-        return "Security Error: at least one configuration command is required."
+        return ToolFailure(
+            "Security Error: at least one configuration command is required.",
+            code="EMPTY_CONFIG_COMMANDS",
+            next_action="Supply the intended configuration commands for review.",
+        )
 
     normalized_commands: list[str] = []
     for cmd in commands:
@@ -313,14 +401,25 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             logger.warning(
                 "blocked config command for %s: %s (%s)", name, cmd, result.reason
             )
-            return f"Security Error: config command '{cmd}' is not permitted ({result.reason})."
+            return ToolFailure(
+                f"Security Error: config command is not permitted ({result.reason}).",
+                code=result.reason,
+                next_action="Review the complete batch with the server operator; no commands were sent.",
+            )
         normalized_commands.append(result.normalized_command)
 
-    devs = load_config_toml()
+    try:
+        devs = load_config_toml()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return _inventory_failure()
     if name not in devs:
         ret = f"Error: no device named '{name}'"
         logger.warning("set_config: %s", ret)
-        return ret
+        return ToolFailure(
+            ret,
+            code="DEVICE_NOT_FOUND",
+            next_action="Use get_network_device_list and select an exact registered device name.",
+        )
 
     try:
         ret = devs[name].send_config_set_and_commit_and_save(normalized_commands)
@@ -331,13 +430,13 @@ def set_config_commands_and_commit_or_save(name: str, commands: list[str]) -> st
             outcome=OUTCOME_SUCCESS,
         )
     except CONNECTION_ERRORS as exc:
-        ret = f"Connection Error: {exc}"
+        ret = _connection_failure(exc, configuration=True)
         log_connection_outcome(
             tool="set_config_commands_and_commit_or_save",
             device=name,
             command=joined_commands,
             outcome=OUTCOME_CONNECTION_ERROR,
-            detail=str(exc),
+            detail=type(exc).__name__,
         )
 
     logger.info("set: name=%s commands=%s", name, commands)

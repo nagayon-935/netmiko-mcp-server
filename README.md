@@ -226,6 +226,10 @@ docker run -d -p 10000:10000 \
 
 ## MCP tools
 
+MCP calls return structured results in `structuredContent` and the same JSON as text. Success is `{"ok": true, "data": ...}`; failure is `{"ok": false, "error": {"code": ..., "message": ..., "next_action": ..., "retryable": false, "execution_state": ...}}` with MCP `isError=true`. This changes the MCP response shape; clients should read `data` instead of assuming raw output. Python helper calls retain their text/parsed-output interface.
+
+Errors distinguish policy denial, missing inventory/devices, authentication failure, connection timeout, output storage, and audit-write failure. Raw connection exceptions are not returned. Failed configuration operations report `execution_state="unknown"` and `retryable=false`: inspect device state before repeating them. Output-save failures report `execution_state="completed"` because the command already ran. Group results contain a `data` map of per-device envelopes plus a `summary` of total/succeeded/failed; partial failure sets `ok=false` without discarding successful output. No automatic retries are performed.
+
 | Tool | Description |
 |---|---|
 | `get_network_device_list` | Returns the list of all devices in the inventory (no credentials included) |

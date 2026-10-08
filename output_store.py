@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tool_results import ToolFailure
+
 DEFAULT_OUTPUT_DIR = "~/.netmiko_mcp_server_outputs"
 
 # Set by main() from the CLI's --output-dir argument before the first tool call.
@@ -124,30 +126,61 @@ def read_output(
 ) -> str:
     """Return a paginated slice of a previously saved output file."""
     if offset < 0:
-        return "Error: offset must be non-negative."
+        return ToolFailure(
+            "Error: offset must be non-negative.",
+            code="INVALID_PAGINATION",
+            next_action="Use an offset of at least 0 and a positive limit.",
+        )
     if limit <= 0:
-        return "Error: limit must be positive."
+        return ToolFailure(
+            "Error: limit must be positive.",
+            code="INVALID_PAGINATION",
+            next_action="Use an offset of at least 0 and a positive limit.",
+        )
     try:
         _validate_path_component(device_name, "device name")
         _validate_path_component(filename, "filename")
     except ValueError as e:
-        return str(e)
+        return ToolFailure(
+            str(e),
+            code="UNSAFE_OUTPUT_PATH",
+            next_action="Use exact device and file names from list_device_outputs.",
+        )
 
     base_dir = Path(output_dir).expanduser()
     try:
         file_path = _restricted_path(base_dir, base_dir / device_name / filename)
     except ValueError as exc:
-        return str(exc)
+        return ToolFailure(
+            str(exc),
+            code="UNSAFE_OUTPUT_PATH",
+            next_action="Use a saved output path inside the configured output directory.",
+        )
 
     if not file_path.is_file():
-        return f"Error: file '{filename}' not found for device '{device_name}'."
+        return ToolFailure(
+            f"Error: file '{filename}' not found for device '{device_name}'.",
+            code="OUTPUT_NOT_FOUND",
+            next_action="Use list_device_outputs to select an existing saved file.",
+        )
 
-    lines = file_path.read_text(encoding="utf-8").splitlines()
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return ToolFailure(
+            "Error: saved output cannot be read.",
+            code="OUTPUT_READ_FAILED",
+            next_action="Check the file permissions and UTF-8 encoding.",
+        )
     total = len(lines)
     if total == 0:
         return "Lines 0-0 of 0.\n"
     if offset >= total:
-        return f"Error: offset {offset} is beyond end of file ({total} line(s))."
+        return ToolFailure(
+            f"Error: offset {offset} is beyond end of file ({total} line(s)).",
+            code="INVALID_PAGINATION",
+            next_action=f"Use an offset between 0 and {total - 1}.",
+        )
 
     end = min(offset + limit, total)
     page = lines[offset:end]
