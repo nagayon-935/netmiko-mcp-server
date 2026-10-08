@@ -70,10 +70,15 @@ def test_validate_device_name_rejects_duplicate_existing() -> None:
         validate_device_name("r1", {"r1", "r2"})
 
 
-@pytest.mark.parametrize("reserved", ["default", "groups", "q"])
+@pytest.mark.parametrize("reserved", ["default", "groups", "q", "all"])
 def test_validate_device_name_rejects_reserved_names(reserved: str) -> None:
     with pytest.raises(ValueError, match="予約"):
         validate_device_name(reserved, set())
+
+
+def test_group_name_all_is_reserved():
+    with pytest.raises(ValueError, match="予約名"):
+        validate_group_names("all")
 
 
 # ---------------------------------------------------------------------------

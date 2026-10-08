@@ -1,5 +1,6 @@
 import argparse
 import ipaddress
+import json
 import logging
 import os
 from typing import Any
@@ -13,6 +14,7 @@ import output_store
 import server
 from audit import configure_audit_logger
 from credential_crypto import KEY_ENV_VAR, encrypt_value, generate_key
+from diagnostics import DiagnosticSettings, format_diagnostics, run_diagnostics
 from http_auth import BearerTokenMiddleware
 from security import (
     load_command_policies,
@@ -29,6 +31,14 @@ BEARER_TOKEN_ENV_VAR = "NETMIKO_MCP_SERVER_BEARER_TOKEN"
 def main() -> None:
     desc = "netmiko-mcp-server"
     parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="check setup offline and exit without starting the server",
+    )
+    parser.add_argument(
+        "--doctor-json", action="store_true", help="return --doctor results as JSON"
+    )
     parser.add_argument(
         "--enable-config",
         action="store_true",
@@ -124,6 +134,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.doctor_json and not args.doctor:
+        parser.error("--doctor-json requires --doctor")
+
     if args.generate_key:
         print(generate_key())
         return
@@ -141,6 +154,26 @@ def main() -> None:
         parser.error(
             "tomlpath is required unless --generate-key or --encrypt-value is used"
         )
+
+    if args.doctor:
+        report = run_diagnostics(
+            DiagnosticSettings(
+                inventory_path=args.tomlpath,
+                commands_path=args.commands_file,
+                audit_log_file=args.audit_log_file,
+                output_dir=args.output_dir,
+                sse=args.sse,
+                bind=args.bind,
+                allowed_subnet=args.allowed_subnet,
+                port=args.port,
+                max_workers=args.max_workers,
+                output_save_threshold=args.output_save_threshold,
+                no_http_auth=args.no_http_auth,
+                enable_config=args.enable_config,
+            )
+        )
+        print(json.dumps(report) if args.doctor_json else format_diagnostics(report))
+        raise SystemExit(0 if report["ok"] else 1)
 
     inventory.tomlpath = args.tomlpath
     server.enable_config = args.enable_config

@@ -73,12 +73,18 @@ def test_get_network_device_list_returns_sanitized_json(monkeypatch):
     device = Device(
         name="r1", hostname="192.0.2.1", device_type="cisco_ios", password="secret"
     )
-    monkeypatch.setattr(server, "load_config_toml", lambda: {"r1": device})
+    monkeypatch.setattr(server, "load_inventory", lambda: Inventory({"r1": device}, {}))
 
     result = json.loads(server.get_network_device_list())
 
     assert result == [
-        {"name": "r1", "hostname": "192.0.2.1", "device_type": "cisco_ios", "port": 22}
+        {
+            "name": "r1",
+            "hostname": "192.0.2.1",
+            "device_type": "cisco_ios",
+            "port": 22,
+            "groups": [],
+        }
     ]
 
 

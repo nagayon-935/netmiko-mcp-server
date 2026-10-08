@@ -34,7 +34,7 @@ MAX_PORT = 65535
 # RESERVED_TOML_KEYS (the non-device top-level keys) is imported from inventory
 # so the builder and the loader cannot disagree about what counts as a device.
 # 'q' is additionally reserved because the interactive UI uses it to quit.
-RESERVED_DEVICE_NAMES = RESERVED_TOML_KEYS | {"q"}
+RESERVED_DEVICE_NAMES = RESERVED_TOML_KEYS | {"q", "all"}
 
 SUGGESTION_LIMIT = 15
 
@@ -78,6 +78,11 @@ class EnteredDevice:
     secret: str | None
     port: int | None
     groups: tuple[str, ...]
+    site: str | None = None
+    role: str | None = None
+    environment: str | None = None
+    description: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 def validate_device_name(
@@ -170,9 +175,22 @@ def validate_group_names(
             )
         if name in device_names:
             raise ValueError(GROUP_COLLIDES_WITH_DEVICE.format(name=name))
+        if name == "all":
+            raise ValueError(
+                "'all' は全デバイスを対象とする予約名のため使用できません。"
+            )
         if name not in names:
             names.append(name)
     return tuple(names)
+
+
+def validate_tags(raw: str) -> tuple[str, ...]:
+    if not raw.strip():
+        return ()
+    tags = [tag.strip() for tag in raw.split(",")]
+    if not all(tags):
+        raise ValueError("空のタグは指定できません（カンマ区切り）。")
+    return tuple(dict.fromkeys(tags))
 
 
 def collect_existing_names(doc: TOMLDocument) -> frozenset[str]:
@@ -221,6 +239,12 @@ def device_to_table(dev: EnteredDevice, key: str | None) -> Table:
         table["secret"] = _maybe_encrypt(dev.secret, key)
     if dev.port is not None:
         table["port"] = dev.port
+    for field in ("site", "role", "environment", "description"):
+        value = getattr(dev, field)
+        if value is not None:
+            table[field] = value
+    if dev.tags:
+        table["tags"] = list(dev.tags)
     return table
 
 

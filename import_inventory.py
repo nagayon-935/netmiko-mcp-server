@@ -39,6 +39,7 @@ from inventory_builder import (
     validate_group_names,
     validate_hostname,
     validate_port,
+    validate_tags,
     validate_username,
 )
 
@@ -188,6 +189,7 @@ def prompt_one_device(
     existing: Collection[str],
     index: int,
     group_names: Collection[str] = (),
+    include_metadata: bool = False,
 ) -> EnteredDevice | None:
     """Prompt all fields for one device; returns None when the user quits."""
     p.say("-" * 50)
@@ -207,6 +209,14 @@ def prompt_one_device(
         "所属グループ (カンマ区切り, 任意): ",
         lambda raw: validate_group_names(raw, taken_device_names),
     )
+    site = role = environment = description = None
+    tags: tuple[str, ...] = ()
+    if include_metadata:
+        site = p.ask("拠点 (任意): ").strip() or None
+        role = p.ask("役割 (例: core-switch, 任意): ").strip() or None
+        environment = p.ask("環境 (例: production / lab, 任意): ").strip() or None
+        description = p.ask("説明 (任意, 認証情報は入力しない): ").strip() or None
+        tags = ask_validated(p, "タグ (カンマ区切り, 任意): ", validate_tags)
     return EnteredDevice(
         name=name,
         hostname=hostname,
@@ -218,6 +228,11 @@ def prompt_one_device(
         secret=secret,
         port=port,
         groups=groups,
+        site=site,
+        role=role,
+        environment=environment,
+        description=description,
+        tags=tags,
     )
 
 
@@ -240,13 +255,16 @@ def collect_devices(
     p: Prompter,
     existing_names: frozenset[str],
     existing_groups: frozenset[str] = frozenset(),
+    include_metadata: bool = False,
 ) -> list[EnteredDevice]:
     devices: list[EnteredDevice] = []
     while True:
         taken = existing_names | {d.name for d in devices}
         groups = existing_groups | {g for d in devices for g in d.groups}
         try:
-            dev = prompt_one_device(p, taken, len(devices) + 1, groups)
+            dev = prompt_one_device(
+                p, taken, len(devices) + 1, groups, include_metadata
+            )
         except (KeyboardInterrupt, EOFError):
             return _handle_interrupt(p, devices)
         if dev is None:
@@ -272,6 +290,12 @@ def render_summary(devices: Sequence[EnteredDevice]) -> str:
             lines.append(f"  port: {dev.port}")
         if dev.groups:
             lines.append(f"  groups: {', '.join(dev.groups)}")
+        for field in ("site", "role", "environment", "description"):
+            value = getattr(dev, field)
+            if value:
+                lines.append(f"  {field}: {value}")
+        if dev.tags:
+            lines.append(f"  tags: {', '.join(dev.tags)}")
     return "\n".join(lines)
 
 
@@ -402,14 +426,17 @@ def _report_verification(p: Prompter, path: Path) -> int:
     return 0
 
 
-def _run(p: Prompter, path: Path) -> int:
+def _run(p: Prompter, path: Path, include_metadata: bool = False) -> int:
     mode = choose_file_mode(p, path)
     doc = load_existing_doc(path) if mode == "append" else tomlkit.document()
     # Resolved before any device is entered: a malformed key or the "abort"
     # choice must not discard a whole session's worth of typing.
     key = resolve_encryption_key(p)
     devices = collect_devices(
-        p, collect_existing_names(doc), collect_existing_group_names(doc)
+        p,
+        collect_existing_names(doc),
+        collect_existing_group_names(doc),
+        include_metadata,
     )
     if not devices:
         p.say("保存するデバイスがありません。ファイルは変更されていません。")
@@ -434,6 +461,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=DEFAULT_INVENTORY_FILE,
         help=f"path to the inventory TOML (default: {DEFAULT_INVENTORY_FILE})",
     )
+    parser.add_argument(
+        "--metadata",
+        action="store_true",
+        help="prompt for public site, role, environment, description, and tags",
+    )
     return parser.parse_args(argv)
 
 
@@ -455,7 +487,7 @@ def main(argv: Sequence[str] | None = None, prompter: Prompter | None = None) ->
     path = Path(args.file)
     try:
         _validate_target_path(path)
-        return _run(p, path)
+        return _run(p, path, args.metadata)
     except AbortRun as exc:
         if exc.message:
             p.say(exc.message)

@@ -41,6 +41,11 @@ class Device:
     ansi_escape_codes: bool
     conn_timeout: int
     read_timeout_override: int
+    site: str | None
+    role: str | None
+    environment: str | None
+    description: str | None
+    tags: list[str]
 
     def __init__(
         self,
@@ -57,7 +62,27 @@ class Device:
         ansi_escape_codes: bool = False,
         conn_timeout: int = 5,
         read_timeout_override: int = 20,
+        site: str | None = None,
+        role: str | None = None,
+        environment: str | None = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
     ) -> None:
+        if name == "all":
+            raise ValueError("'all' is reserved for targeting every device")
+        for field, value in {
+            "site": site,
+            "role": role,
+            "environment": environment,
+            "description": description,
+        }.items():
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"'{field}' must be a string")
+        if tags is not None and (
+            not isinstance(tags, list)
+            or not all(isinstance(tag, str) and tag.strip() for tag in tags)
+        ):
+            raise ValueError("'tags' must be an array of non-empty strings")
         if device_type not in platforms + telnet_platforms:
             raise ValueError(f"name:{name}, invalid device_type: '{device_type}'")
 
@@ -77,14 +102,26 @@ class Device:
         self.ansi_escape_codes = ansi_escape_codes
         self.conn_timeout = conn_timeout
         self.read_timeout_override = read_timeout_override
+        self.site = site
+        self.role = role
+        self.environment = environment
+        self.description = description
+        self.tags = list(dict.fromkeys(tags or []))
 
     def json(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "name": self.name,
             "hostname": self.hostname,
             "device_type": self.device_type,
             "port": self.port,
         }
+        for field in ("site", "role", "environment", "description"):
+            value = getattr(self, field)
+            if value:
+                result[field] = value
+        if self.tags:
+            result["tags"] = list(self.tags)
+        return result
 
     @property
     def connect_kwargs(self) -> dict[str, Any]:
@@ -174,6 +211,8 @@ def _parse_devices(data: dict[str, Any]) -> dict[str, Device]:
             raise ValueError(f"unexpected value in toml: {v}")
 
         v = {**default_args, **v}
+        if "name" in v and v["name"] != name:
+            raise ValueError(f"device '{name}' cannot override its registered name")
         v.setdefault("name", name)
 
         for field in _ENCRYPTABLE_FIELDS:
@@ -204,6 +243,71 @@ class Inventory:
 
     devices: dict[str, Device]
     groups: dict[str, list[str]]
+
+    def describe_devices(self) -> list[dict[str, Any]]:
+        """Expose public metadata and memberships, never connection credentials."""
+        memberships: dict[str, list[str]] = {name: [] for name in self.devices}
+        for group in self.groups:
+            if group == "all" or group in self.devices:
+                raise ValueError(
+                    f"group '{group}' conflicts with a device or reserved target"
+                )
+            for name in self.get_device_names(group):
+                memberships[name].append(group)
+        return [
+            {**device.json(), "groups": memberships[name]}
+            for name, device in self.devices.items()
+        ]
+
+    def find_devices(
+        self,
+        query: str = "",
+        *,
+        site: str | None = None,
+        role: str | None = None,
+        environment: str | None = None,
+        group: str | None = None,
+        tag: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return candidates by public metadata; never resolve fuzzy execution targets."""
+        needle = query.strip().casefold()
+        matches = []
+        for device in self.describe_devices():
+            if any(
+                value is not None
+                and device.get(field, "").casefold() != value.strip().casefold()
+                for field, value in (
+                    ("site", site),
+                    ("role", role),
+                    ("environment", environment),
+                )
+            ):
+                continue
+            if group is not None and group.strip().casefold() not in [
+                name.casefold() for name in device["groups"]
+            ]:
+                continue
+            if tag is not None and tag.strip().casefold() not in [
+                name.casefold() for name in device.get("tags", [])
+            ]:
+                continue
+            searchable = [
+                str(device.get(field, ""))
+                for field in (
+                    "name",
+                    "hostname",
+                    "device_type",
+                    "site",
+                    "role",
+                    "environment",
+                    "description",
+                )
+            ]
+            searchable.extend(device["groups"])
+            searchable.extend(device.get("tags", []))
+            if not needle or any(needle in value.casefold() for value in searchable):
+                matches.append(device)
+        return matches
 
     def get_device_names(self, device_or_group: str) -> list[str]:
         if device_or_group == "all":
