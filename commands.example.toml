@@ -1,0 +1,4 @@
+allowed_commands = [
+      "show version",
+      "show ip interface brief"
+]
