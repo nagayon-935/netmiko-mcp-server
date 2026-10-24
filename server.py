@@ -122,19 +122,20 @@ def get_network_device_list() -> str:
         return _inventory_failure()
 
 
-@mcp.tool()
-def get_network_group_list() -> dict[str, list[str]]:
+@structured_tool(mcp)
+def get_network_group_list() -> dict[str, Any]:
     """List groups and their exact registered device names without connecting.
 
     Use these exact names with execution tools. The special target 'all'
     selects every device and is not a registered group.
     """
-    snapshot = load_inventory()
-    snapshot.describe_devices()
-    return {group: snapshot.get_device_names(group) for group in snapshot.groups}
+    try:
+        return load_inventory().describe_groups()
+    except INVENTORY_ERRORS:
+        return {"error": _inventory_failure()}
 
 
-@mcp.tool()
+@structured_tool(mcp)
 def find_network_devices(
     query: str = "",
     site: str | None = None,
@@ -153,11 +154,20 @@ def find_network_devices(
     Use the exact registered name from a selected match for execution.
     """
     if not 1 <= limit <= 100:
-        return {"error": "Error: limit must be between 1 and 100."}
-    snapshot = load_inventory()
-    matches = snapshot.find_devices(
-        query, site=site, role=role, environment=environment, group=group, tag=tag
-    )
+        return {
+            "error": ToolFailure(
+                "Error: limit must be between 1 and 100.",
+                code="INVALID_SEARCH_LIMIT",
+                next_action="Use a limit between 1 and 100.",
+            )
+        }
+    try:
+        snapshot = load_inventory()
+        matches = snapshot.find_devices(
+            query, site=site, role=role, environment=environment, group=group, tag=tag
+        )
+    except INVENTORY_ERRORS:
+        return {"error": _inventory_failure()}
     return {
         "matches": matches[:limit],
         "total": len(matches),
@@ -178,11 +188,7 @@ def _maybe_save_output(
         saved_name = output_store.save_output(device_name, command, output)
         return f"Output saved as '{saved_name}'."
 
-    as_str = (
-        json.dumps(output, indent=2)
-        if isinstance(output, (list, dict))
-        else str(output)
-    )
+    as_str = output_store.format_output(output)
     line_count = len(as_str.splitlines())
     if line_count > output_save_threshold:
         saved_name = output_store.save_output(device_name, command, output)

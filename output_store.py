@@ -66,17 +66,30 @@ def _restricted_path(base_dir: Path, path: Path) -> Path:
     raise ValueError("Security Error: path resolves outside restricted directory")
 
 
+def _base_dir() -> Path:
+    return Path(output_dir).expanduser()
+
+
 def _device_directory(device_name: str) -> Path:
     _validate_path_component(device_name, "device name")
-    base_dir = Path(output_dir).expanduser()
+    base_dir = _base_dir()
     return _restricted_path(base_dir, base_dir / device_name)
+
+
+def format_output(output: Any) -> str:
+    """Serialize structured output as JSON or coerce raw text to str."""
+    return (
+        json.dumps(output, indent=2)
+        if isinstance(output, (list, dict))
+        else str(output)
+    )
 
 
 def save_output(device_name: str, command: str, output: Any) -> str:
     """Save output for device_name to a new file and return its filename."""
     device_dir = _device_directory(device_name)
 
-    base_dir = Path(output_dir).expanduser()
+    base_dir = _base_dir()
     base_dir.mkdir(parents=True, exist_ok=True)
     base_dir.chmod(0o700)
 
@@ -85,11 +98,7 @@ def save_output(device_name: str, command: str, output: Any) -> str:
 
     cmd_part = _sanitize_command_for_filename(command)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-    content = (
-        json.dumps(output, indent=2)
-        if isinstance(output, (list, dict))
-        else str(output)
-    )
+    content = format_output(output)
     # mkstemp creates a unique file with mode 0600 from the first write, so
     # concurrent results cannot overwrite each other or expose output briefly.
     fd, filename = tempfile.mkstemp(
@@ -110,7 +119,7 @@ def list_outputs(device_name: str) -> list[str]:
     device_dir = _device_directory(device_name)
     if not device_dir.is_dir():
         return []
-    base_dir = Path(output_dir).expanduser()
+    base_dir = _base_dir()
     return sorted(
         (
             f.name
@@ -147,7 +156,7 @@ def read_output(
             next_action="Use exact device and file names from list_device_outputs.",
         )
 
-    base_dir = Path(output_dir).expanduser()
+    base_dir = _base_dir()
     try:
         file_path = _restricted_path(base_dir, base_dir / device_name / filename)
     except ValueError as exc:

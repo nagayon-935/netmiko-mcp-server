@@ -47,6 +47,9 @@ def result_payload(value: Any) -> dict[str, Any]:
     return {"ok": True, "data": value}
 
 
+_JSON_STRING_TOOLS = frozenset({"get_network_device_list", "list_device_outputs"})
+
+
 def structured_tool(mcp: "FastMCP") -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Register a structured MCP adapter, retaining the original Python helper."""
 
@@ -63,7 +66,7 @@ def structured_tool(mcp: "FastMCP") -> Callable[[Callable[P, R]], Callable[P, R]
                     execution_state=exc.execution_state,
                 )
             if (
-                func.__name__ in {"get_network_device_list", "list_device_outputs"}
+                func.__name__ in _JSON_STRING_TOOLS
                 and isinstance(value, str)
                 and not isinstance(value, ToolFailure)
             ):

@@ -15,7 +15,7 @@ import server
 from audit import configure_audit_logger
 from credential_crypto import KEY_ENV_VAR, encrypt_value, generate_key
 from diagnostics import DiagnosticSettings, format_diagnostics, run_diagnostics
-from http_auth import BearerTokenMiddleware
+from http_auth import BEARER_TOKEN_ENV_VAR, BearerTokenMiddleware, parse_allowed_subnets
 from security import (
     load_command_policies,
     validate_command_lists,
@@ -23,9 +23,6 @@ from security import (
 
 logger = logging.getLogger("netmiko-mcp-server")
 logging.basicConfig(level=logging.INFO)
-
-
-BEARER_TOKEN_ENV_VAR = "NETMIKO_MCP_SERVER_BEARER_TOKEN"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -162,11 +159,7 @@ def _apply_runtime_config(args: argparse.Namespace) -> None:
 
 def _build_sse_app(args: argparse.Namespace) -> Any:
     """Build the SSE ASGI app with subnet restriction and Bearer authentication."""
-    allowed_subnets = [
-        ipaddress.ip_network(item.strip(), strict=False)
-        for item in args.allowed_subnet.split(",")
-        if item.strip()
-    ]
+    allowed_subnets = parse_allowed_subnets(args.allowed_subnet)
     bind_ip = ipaddress.ip_address(args.bind)
     if not any(bind_ip in net for net in allowed_subnets):
         raise SystemExit(

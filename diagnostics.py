@@ -10,10 +10,9 @@ from typing import Any
 from cryptography.fernet import Fernet
 
 from credential_crypto import KEY_ENV_VAR
+from http_auth import BEARER_TOKEN_ENV_VAR, parse_allowed_subnets
 from inventory import Inventory, _parse_devices, _parse_groups
 from security import load_command_policies, validate_command_lists
-
-BEARER_TOKEN_ENV_VAR = "NETMIKO_MCP_SERVER_BEARER_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -70,11 +69,7 @@ def _inventory_checks(path: str) -> list[dict[str, str]]:
         for device in snapshot.devices.values():
             if device.key_file is not None and not isinstance(device.key_file, str):
                 raise TypeError("key_file must be a path string")
-        for group in snapshot.groups:
-            # Device/group name collisions would bypass group resolution.
-            if group == "all" or group in snapshot.devices:
-                raise ValueError("Unreachable group")
-            snapshot.get_device_names(group)
+        snapshot.describe_groups()
     except RuntimeError:
         return [
             _check(
@@ -262,11 +257,7 @@ def run_diagnostics(settings: DiagnosticSettings) -> dict[str, Any]:
         )
     if settings.sse:
         try:
-            networks = [
-                ipaddress.ip_network(item.strip(), strict=False)
-                for item in settings.allowed_subnet.split(",")
-                if item.strip()
-            ]
+            networks = parse_allowed_subnets(settings.allowed_subnet)
             bind = ipaddress.ip_address(settings.bind)
             if (
                 not any(bind in net for net in networks)

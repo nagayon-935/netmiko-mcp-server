@@ -165,18 +165,30 @@ def test_group_result_preserves_successful_and_failed_devices(device, monkeypatc
     assert payload["data"]["r2"]["error"]["code"] == "AUTHENTICATION_FAILED"
 
 
-def test_inventory_errors_are_structured_without_secret_details(device, monkeypatch):
+@pytest.mark.parametrize(
+    "tool_name",
+    ["get_network_device_list", "get_network_group_list", "find_network_devices"],
+)
+def test_inventory_errors_are_structured_without_secret_details(
+    device, monkeypatch, tool_name
+):
     def fail():
         raise ValueError("DO_NOT_EXPOSE")
 
     monkeypatch.setattr(server, "load_inventory", fail)
-    payload = call("get_network_device_list")
+    payload = call(tool_name)
     assert payload["error"]["code"] == "INVENTORY_UNAVAILABLE"
     assert "DO_NOT_EXPOSE" not in json.dumps(payload)
 
 
+def test_find_network_devices_invalid_limit_is_structured(device):
+    payload = call("find_network_devices", limit=0)
+    assert payload["error"]["code"] == "INVALID_SEARCH_LIMIT"
+
+
 def test_lists_are_returned_as_structured_data(device, monkeypatch):
     assert call("get_network_device_list")["data"] == [{**device.json(), "groups": []}]
+    assert call("get_network_group_list")["data"] == {}
     monkeypatch.setattr(server, "get_device_names", lambda target: ["r1"])
     assert call("list_device_outputs", device_or_group="r1")["data"] == {"r1": []}
 
