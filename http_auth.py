@@ -9,8 +9,22 @@ attacks. Non-HTTP ASGI scopes (lifespan, etc.) pass through unchecked.
 """
 
 import hmac
+import ipaddress
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+BEARER_TOKEN_ENV_VAR = "NETMIKO_MCP_SERVER_BEARER_TOKEN"
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def parse_allowed_subnets(raw: str) -> list[IPNetwork]:
+    """Parse a comma-separated list of CIDR subnets."""
+    return [
+        ipaddress.ip_network(item.strip(), strict=False)
+        for item in raw.split(",")
+        if item.strip()
+    ]
 
 
 class BearerTokenMiddleware:

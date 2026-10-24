@@ -16,6 +16,7 @@ allowing more than intended.
 import re
 import tomllib
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 # Characters permitted in a submitted command. Deliberately excludes
@@ -109,20 +110,10 @@ def _invalid_glob_entries(entries: tuple[str, ...]) -> list[str]:
     """Return entries whose '*' usage is not a single trailing glob."""
     invalid = []
     for entry in entries:
-        words = entry.strip().split()
-        if not words:
+        stripped = entry.strip()
+        if not stripped or "*" not in stripped:
             continue
-        if entry.count("*") > 1:
-            invalid.append(entry)
-            continue
-        last = words[-1]
-        if last == "*":
-            if len(words) == 1:
-                invalid.append(entry)
-        elif last.endswith("*"):
-            if len(last) == 1 or any("*" in w for w in words[:-1]):
-                invalid.append(entry)
-        elif "*" in entry:
+        if stripped.count("*") > 1 or stripped == "*" or not stripped.endswith("*"):
             invalid.append(entry)
     return invalid
 
@@ -133,21 +124,20 @@ def validate_command_lists(policy: CommandPolicy) -> list[str]:
     misconfigured commands file is caught before the server accepts requests.
     """
     errors: list[str] = []
-    bad_allow = _invalid_glob_entries(policy.allowed_commands)
-    if bad_allow:
-        errors.append(
-            f"allowed_commands contains unsupported glob pattern(s): {bad_allow}. "
-            f"'*' must appear only as a trailing word ('cmd *') or trailing character ('cmd*')."
-        )
-    bad_deny = _invalid_glob_entries(policy.denied_commands)
-    if bad_deny:
-        errors.append(
-            f"denied_commands contains unsupported glob pattern(s): {bad_deny}. "
-            f"'*' must appear only as a trailing word ('cmd *') or trailing character ('cmd*')."
-        )
+    for field_name, entries in (
+        ("allowed_commands", policy.allowed_commands),
+        ("denied_commands", policy.denied_commands),
+    ):
+        bad_entries = _invalid_glob_entries(entries)
+        if bad_entries:
+            errors.append(
+                f"{field_name} contains unsupported glob pattern(s): {bad_entries}. "
+                f"'*' must appear only as a trailing word ('cmd *') or trailing character ('cmd*')."
+            )
     return errors
 
 
+@lru_cache(maxsize=256)
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     escaped = re.escape(pattern.strip())
     escaped = escaped.replace(r"\ \*", r"\ .*")

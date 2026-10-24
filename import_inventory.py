@@ -402,8 +402,7 @@ def verify_written_file(path: Path) -> tuple[str, str]:
     saved = inventory.tomlpath
     inventory.tomlpath = str(path)
     try:
-        inventory.load_config_toml()
-        inventory.load_groups()
+        inventory.load_inventory().describe_groups()
         return "ok", ""
     except RuntimeError as exc:
         return "warning", str(exc)

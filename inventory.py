@@ -2,6 +2,8 @@
 
 import logging
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -164,19 +166,21 @@ class Device:
                     "pre_command failed for %s (%s): %s", self.name, cmd, exc
                 )
 
-    def send_command(self, cmd: str, use_textfsm: bool = False) -> Any:
+    @contextmanager
+    def _open_session(self) -> Iterator[Any]:
         with ConnectHandler(**self.connect_kwargs) as conn:
             self._apply_session_options(conn)
             self._maybe_enable(conn)
             self._run_pre_commands(conn)
+            yield conn
+
+    def send_command(self, cmd: str, use_textfsm: bool = False) -> Any:
+        with self._open_session() as conn:
             output = conn.send_command(cmd, use_textfsm=use_textfsm)
         return output if isinstance(output, (list, dict)) else str(output)
 
     def send_config_set_and_commit_and_save(self, cmds: list[str]) -> str:
-        with ConnectHandler(**self.connect_kwargs) as conn:
-            self._apply_session_options(conn)
-            self._maybe_enable(conn)
-            self._run_pre_commands(conn)
+        with self._open_session() as conn:
             output = conn.send_config_set(cmds)
             try:
                 output += conn.commit()
@@ -244,15 +248,22 @@ class Inventory:
     devices: dict[str, Device]
     groups: dict[str, list[str]]
 
-    def describe_devices(self) -> list[dict[str, Any]]:
-        """Expose public metadata and memberships, never connection credentials."""
-        memberships: dict[str, list[str]] = {name: [] for name in self.devices}
+    def describe_groups(self) -> dict[str, list[str]]:
+        """Validate group names and return deduplicated member device names."""
+        resolved: dict[str, list[str]] = {}
         for group in self.groups:
             if group == "all" or group in self.devices:
                 raise ValueError(
                     f"group '{group}' conflicts with a device or reserved target"
                 )
-            for name in self.get_device_names(group):
+            resolved[group] = self.get_device_names(group)
+        return resolved
+
+    def describe_devices(self) -> list[dict[str, Any]]:
+        """Expose public metadata and memberships, never connection credentials."""
+        memberships: dict[str, list[str]] = {name: [] for name in self.devices}
+        for group, members in self.describe_groups().items():
+            for name in members:
                 memberships[name].append(group)
         return [
             {**device.json(), "groups": memberships[name]}
@@ -271,25 +282,32 @@ class Inventory:
     ) -> list[dict[str, Any]]:
         """Return candidates by public metadata; never resolve fuzzy execution targets."""
         needle = query.strip().casefold()
+        exact_filters = tuple(
+            (field, value.strip().casefold())
+            for field, value in (
+                ("site", site),
+                ("role", role),
+                ("environment", environment),
+            )
+            if value is not None
+        )
+        group_filter = group.strip().casefold() if group is not None else None
+        tag_filter = tag.strip().casefold() if tag is not None else None
+
         matches = []
         for device in self.describe_devices():
             if any(
-                value is not None
-                and device.get(field, "").casefold() != value.strip().casefold()
-                for field, value in (
-                    ("site", site),
-                    ("role", role),
-                    ("environment", environment),
-                )
+                device.get(field, "").casefold() != expected
+                for field, expected in exact_filters
             ):
                 continue
-            if group is not None and group.strip().casefold() not in [
-                name.casefold() for name in device["groups"]
-            ]:
+            if group_filter is not None and not any(
+                name.casefold() == group_filter for name in device["groups"]
+            ):
                 continue
-            if tag is not None and tag.strip().casefold() not in [
-                name.casefold() for name in device.get("tags", [])
-            ]:
+            if tag_filter is not None and not any(
+                name.casefold() == tag_filter for name in device.get("tags", [])
+            ):
                 continue
             searchable = [
                 str(device.get(field, ""))
