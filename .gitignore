@@ -13,3 +13,6 @@ __pycache__/
 
 # Claude Code local configuration
 CLAUDE.md
+
+# Claude Code local data
+.claude/
